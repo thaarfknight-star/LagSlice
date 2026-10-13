@@ -571,14 +571,31 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 | QtCore.Qt.AlignmentFlag.AlignVCenter)
         return it
 
-    def _set_kill_button(self, r, pid):
-        """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
+    def _pool_button(self, r):
+        """دکمه‌ی pool برای سطر r — اگر حذف شده بود، از نو ساخته می‌شود."""
+        btn = None
         if r < len(self._kill_btn_pool):
-            btn = self._kill_btn_pool[r]
-        else:
+            cand = self._kill_btn_pool[r]
+            if cand is not None:
+                try:
+                    cand.setText(cand.text())  # تست زنده‌بودن
+                    btn = cand
+                except RuntimeError:
+                    btn = None
+        if btn is None:
             btn = QtWidgets.QPushButton()
             btn.setObjectName("Danger")
-            self._kill_btn_pool.append(btn)
+            if r < len(self._kill_btn_pool):
+                self._kill_btn_pool[r] = btn
+            else:
+                while len(self._kill_btn_pool) < r:
+                    self._kill_btn_pool.append(None)
+                self._kill_btn_pool.append(btn)
+        return btn
+
+    def _set_kill_button(self, r, pid):
+        """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
+        btn = self._pool_button(r)
         btn.setText(tr("btn_kill"))
         try:
             btn.clicked.disconnect()
@@ -602,10 +619,19 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
         self.proc_table.clearSpans()
         for r in range(self.proc_table.rowCount()):
-            w = self.proc_table.cellWidget(r, 4)
-            if w is not None and w in self._kill_btn_pool:
+            try:
+                w = self.proc_table.cellWidget(r, 4)
+                if w is None:
+                    continue
+                w.isVisible()  # تست زنده‌بودن
+            except RuntimeError:
+                continue
+            if w in self._kill_btn_pool:
                 self.proc_table.removeCellWidget(r, 4)
-                w.setVisible(False)
+                try:
+                    w.setVisible(False)
+                except RuntimeError:
+                    pass
         per_proc = (getattr(self, "_last_stats", None) or {}).get("per_proc") or {}
         if per_proc:
             # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
@@ -764,13 +790,20 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_scan_all.setText(tr("scan_all"))
         self.btn_scan_all.setToolTip(tr("scan_hint"))
         self.btn_scan_one.setText(tr("scan_one"))
+        self.btn_scan_one.setToolTip(tr("scan_one_tip"))
         self.btn_scan_stop.setText(tr("scan_stop"))
+        self.btn_scan_stop.setToolTip(tr("scan_stop_tip"))
         self.btn_srv_add.setText(tr("scan_add"))
+        self.btn_srv_add.setToolTip(tr("scan_add_tip"))
         self.btn_srv_edit.setText(tr("scan_edit"))
+        self.btn_srv_edit.setToolTip(tr("scan_edit_tip"))
         self.btn_srv_del.setText(tr("scan_del"))
+        self.btn_srv_del.setToolTip(tr("scan_del_tip"))
         self.btn_srv_import.setText(tr("scan_import"))
+        self.btn_srv_import.setToolTip(tr("scan_import_hint"))
         self.btn_srv_copy.setText(tr("scan_copy"))
         self.btn_srv_copy.setToolTip(tr("scan_copied"))
+        self.scan_table.setToolTip(tr("scan_table_tip"))
         self.scan_table.setHorizontalHeaderLabels(
             [tr("scan_col_server"), tr("scan_col_region"), tr("scan_col_ping"),
              tr("scan_col_loss"), tr("scan_col_tcp"), tr("scan_col_score")])
@@ -795,6 +828,42 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 return s
         return None
 
+    def _fill_scan_row(self, i, s, r):
+        """پر کردن سطر i جدول اسکن (برای رفرش کامل یا آپدیت درجا)."""
+        fa = get_lang() == "fa"
+        it0 = self._tcell(s.get("name", ""))
+        it0.setData(QtCore.Qt.ItemDataRole.UserRole, s.get("id"))
+        self.scan_table.setItem(i, 0, it0)
+        self.scan_table.setItem(
+            i, 1, self._tcell(tr("region_" + (s.get("region") or "unknown"))))
+        if r is None:
+            for c in range(2, 6):
+                self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
+        elif not r["ok"]:
+            for c in (2, 3, 4):
+                self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
+            down = self._tcell(tr("scan_down"))
+            down.setToolTip(tr("scan_down_tip"))
+            self.scan_table.setItem(i, 5, down)
+            it0.setToolTip(tr("scan_down_tip"))
+        else:
+            ping = f"{r['ping_ms']:.0f} ms" if r["ping_ms"] is not None else "—"
+            loss = f"{r['loss']:.0f}٪" if fa else f"{r['loss']:.0f}%"
+            tcp = f"{r['tcp_ms']:.0f} ms"
+            self.scan_table.setItem(i, 2, self._tcell(fa_digits(ping), numeric=True))
+            self.scan_table.setItem(i, 3, self._tcell(fa_digits(loss), numeric=True))
+            self.scan_table.setItem(i, 4, self._tcell(fa_digits(tcp), numeric=True))
+            self.scan_table.setItem(i, 5, self._tcell(
+                fa_digits(f"{r['score']:.0f}"), numeric=True))
+
+    def _scan_row_for(self, sid):
+        """پیدا کردن سطر جدول برای id سرور (آپدیت درجا، بدون پرش)."""
+        for i in range(self.scan_table.rowCount()):
+            it = self.scan_table.item(i, 0)
+            if it is not None and it.data(QtCore.Qt.ItemDataRole.UserRole) == sid:
+                return i
+        return -1
+
     def _refresh_scan_table(self):
         """جدول سرورها مرتب بر اساس امتیاز (بهترین اول)."""
         if not self.servers:
@@ -809,29 +878,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             rows.append((r["score"] if r else float("inf"), s, r))
         rows.sort(key=lambda x: x[0])
         self.scan_table.setRowCount(len(rows))
-        fa = get_lang() == "fa"
         for i, (_sc, s, r) in enumerate(rows):
-            it0 = self._tcell(s.get("name", ""))
-            it0.setData(QtCore.Qt.ItemDataRole.UserRole, s.get("id"))
-            self.scan_table.setItem(i, 0, it0)
-            self.scan_table.setItem(
-                i, 1, self._tcell(tr("region_" + (s.get("region") or "unknown"))))
-            if r is None:
-                for c in range(2, 6):
-                    self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
-            elif not r["ok"]:
-                for c in (2, 3, 4):
-                    self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
-                self.scan_table.setItem(i, 5, self._tcell(tr("scan_down")))
-            else:
-                ping = f"{r['ping_ms']:.0f} ms" if r["ping_ms"] is not None else "—"
-                loss = f"{r['loss']:.0f}٪" if fa else f"{r['loss']:.0f}%"
-                tcp = f"{r['tcp_ms']:.0f} ms"
-                self.scan_table.setItem(i, 2, self._tcell(fa_digits(ping), numeric=True))
-                self.scan_table.setItem(i, 3, self._tcell(fa_digits(loss), numeric=True))
-                self.scan_table.setItem(i, 4, self._tcell(fa_digits(tcp), numeric=True))
-                self.scan_table.setItem(i, 5, self._tcell(
-                    fa_digits(f"{r['score']:.0f}"), numeric=True))
+            self._fill_scan_row(i, s, r)
         self._update_best_banner()
 
     def _update_best_banner(self):
@@ -845,7 +893,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             return
         s, r = best
         url = server_rtmp_url(s)
-        self.scan_best.setText(f"{tr('scan_best')}: {s.get('name')} — {url}")
+        txt = f"{tr('scan_best')}: {s.get('name')}"
+        if url:
+            txt += f" — {url}"
+        self.scan_best.setText(txt)
         self.scan_best.setVisible(True)
 
     # ----- اجرای اسکن -----
@@ -889,9 +940,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.scan_lbl.setText(f"{tr('scan_scanning')} {fa_digits(done)} {tr('scan_of')} {fa_digits(total)}")
 
     def _on_scan_result(self, r):
+        # آپدیت درجا بدون مرتب‌سازی مجدد تا جدول حین اسکن نپرد
         if r.get("id"):
             self._scan_results[r["id"]] = r
-            self._refresh_scan_table()
+            i = self._scan_row_for(r["id"])
+            if i >= 0:
+                s = next((x for x in self.servers if x.get("id") == r["id"]), None)
+                if s is not None:
+                    self._fill_scan_row(i, s, r)
 
     def _on_scan_done(self, results):
         self._scanning = False
@@ -902,11 +958,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_scan_stop.setEnabled(False)
         self._scan_thread = None
         ups = [r for r in results if r.get("ok")]
+        self._refresh_scan_table()
         if not ups:
             self.log("❌ " + tr("scan_none_up"))
             QtWidgets.QMessageBox.warning(self, tr("tab_scan"), tr("scan_none_up"))
         else:
-            self._refresh_scan_table()
             self.log(f"⚡ {len(ups)} {tr('scan_up')}")
 
     def _scan_stop(self):
