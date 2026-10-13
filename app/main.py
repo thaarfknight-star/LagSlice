@@ -21,7 +21,7 @@ from procman import (
     load_safelist, save_safelist, is_admin, base_dir,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 APP_DIR = base_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "lagslice_config.json")
