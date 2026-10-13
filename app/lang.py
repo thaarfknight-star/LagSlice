@@ -1,0 +1,148 @@
+# -*- coding: utf-8 -*-
+"""سیستم دوزبانه LagSlice: فارسی / انگلیسی با تعویض داخل برنامه.
+
+همه‌ی متن‌های UI از این دیکشنری می‌آیند؛ هیچ رشته‌ی نمایشی
+هاردکد در کد UI نیست. جهت چیدمان هم با زبان عوض می‌شود.
+"""
+import json
+import os
+
+LANGS = ("fa", "en")
+_current = "fa"
+
+STRINGS = {
+    # ---- سربرگ ----
+    "app_subtitle": {
+        "fa": "بهینه‌ساز استریم — اینترنت ایران",
+        "en": "Stream optimizer — for weak connections",
+    },
+    "status_ready": {"fa": "آماده", "en": "Ready"},
+    "status_streaming": {"fa": "🔴 استریم فعال", "en": "🔴 Streaming"},
+    "admin_warn": {
+        "fa": "⚠ بدون دسترسی ادمین اجرا شدی؛ بستن بعضی برنامه‌ها کار نمی‌کند. با Run as administrator اجرا کن.",
+        "en": "⚠ Not running as administrator; closing some apps won't work. Run as administrator.",
+    },
+    # ---- کارت‌های آمار ----
+    "stat_up": {"fa": "آپلود لحظه‌ای", "en": "Upload now"},
+    "stat_down": {"fa": "دانلود لحظه‌ای", "en": "Download now"},
+    "stat_ping": {"fa": "پینگ سرور", "en": "Server ping"},
+    "stat_delay": {"fa": "وضعیت تأخیر ویور (تخمینی)", "en": "Viewer delay (estimated)"},
+    "jitter": {"fa": "جیتر", "en": "jitter"},
+    "disconnected": {"fa": "قطع", "en": "Down"},
+    # ---- وضعیت تأخیر ----
+    "delay_good": {"fa": "پایدار", "en": "Stable"},
+    "delay_good_d": {
+        "fa": "آپلود کافی است؛ تأخیر ویور در محدوده امن",
+        "en": "Upload is sufficient; viewer delay is safe",
+    },
+    "delay_warn": {"fa": "لب مرز", "en": "Borderline"},
+    "delay_warn_d": {
+        "fa": "آپلود نزدیک به بیت‌ریت است؛ ریسک افزایش تأخیر",
+        "en": "Upload is close to bitrate; delay may rise",
+    },
+    "delay_bad": {"fa": "بحرانی", "en": "Critical"},
+    "delay_bad_d": {
+        "fa": "آپلود کمتر از بیت‌ریت؛ خطر تأخیر بالای ۲۰ ثانیه",
+        "en": "Upload below bitrate; delay may exceed 20s",
+    },
+    "delay_unknown": {"fa": "نامشخص", "en": "Unknown"},
+    "delay_unknown_d": {"fa": "در حال اندازه‌گیری…", "en": "Measuring…"},
+    # ---- دکمه استریم ----
+    "stream_start": {"fa": "🎬 شروع حالت استریم", "en": "🎬 Start stream mode"},
+    "stream_stop": {"fa": "⏹ توقف حالت استریم", "en": "⏹ Stop stream mode"},
+    # ---- تب‌ها ----
+    "tab_procs": {"fa": "برنامه‌ها", "en": "Apps"},
+    "tab_safe": {"fa": "لیست امن", "en": "Safe list"},
+    "tab_settings": {"fa": "تنظیمات", "en": "Settings"},
+    "tab_log": {"fa": "لاگ", "en": "Log"},
+    # ---- تب برنامه‌ها ----
+    "procs_hint": {
+        "fa": "برنامه‌های اینترنت‌خور (غیر لیست امن) را می‌توانی ببندی. پروسس‌های سیستمی و لیست امن هرگز نمایش داده نمی‌شوند.",
+        "en": "You can close bandwidth-hogging apps (not in safe list). System processes and safe-listed apps are never shown.",
+    },
+    "col_app": {"fa": "برنامه", "en": "App"},
+    "col_pid": {"fa": "PID", "en": "PID"},
+    "col_cpu": {"fa": "CPU ٪", "en": "CPU %"},
+    "col_ram": {"fa": "RAM (MB)", "en": "RAM (MB)"},
+    "btn_kill": {"fa": "بستن", "en": "Kill"},
+    # ---- تب لیست امن ----
+    "safe_hint": {
+        "fa": "این برنامه‌ها در «حالت استریم» هرگز بسته نمی‌شوند. اسم فایل اجرایی (مثل cs2.exe) را اضافه یا حذف کن.",
+        "en": "These apps are never closed in stream mode. Add or remove executable names (e.g. cs2.exe).",
+    },
+    "safe_placeholder": {"fa": "مثلاً: myapp.exe", "en": "e.g. myapp.exe"},
+    "safe_add": {"fa": "➕ افزودن", "en": "➕ Add"},
+    "safe_del": {"fa": "➖ حذف انتخاب‌شده", "en": "➖ Remove selected"},
+    # ---- تب تنظیمات ----
+    "set_server": {"fa": "سرور پینگ:", "en": "Ping server:"},
+    "set_server_ph": {"fa": "آی‌پی سرور استریم (MasterStream)", "en": "Stream server IP (MasterStream)"},
+    "set_bitrate": {"fa": "بیت‌ریت استریم (Mbps):", "en": "Stream bitrate (Mbps):"},
+    "set_save": {"fa": "💾 ذخیره تنظیمات", "en": "💾 Save settings"},
+    "set_note": {
+        "fa": "پینگ به اولین سرور لیست گرفته می‌شود. بیت‌ریت را مطابق تنظیمات MeldStudio بگذار.",
+        "en": "Ping uses the first server in the list. Set bitrate to match your MeldStudio settings.",
+    },
+    "lang_label": {"fa": "زبان / Language:", "en": "Language / زبان:"},
+    # ---- لاگ ----
+    "log_ready": {"fa": "LagSlice آماده است ⚡", "en": "LagSlice is ready ⚡"},
+    "log_stream_on": {"fa": "🎬 حالت استریم فعال شد؛ بستن برنامه‌های اینترنت‌خور…", "en": "🎬 Stream mode on; closing bandwidth hogs…"},
+    "log_nothing": {"fa": "برنامه‌ی اضافی برای بستن پیدا نشد ✅", "en": "No extra apps to close ✅"},
+    "log_stream_off": {"fa": "⏹ حالت استریم متوقف شد", "en": "⏹ Stream mode stopped"},
+    "log_safe_add": {"fa": "به لیست امن اضافه شد", "en": "added to safe list"},
+    "log_safe_del": {"fa": "از لیست امن حذف شد", "en": "removed from safe list"},
+    "log_settings_saved": {"fa": "💾 تنظیمات ذخیره شد", "en": "💾 Settings saved"},
+    "log_lang_changed": {"fa": "🌐 زبان عوض شد", "en": "🌐 Language changed"},
+    # ---- پیام‌های بستن پروسس ----
+    "kill_ok": {"fa": "بسته شد", "en": "closed"},
+    "kill_gone": {"fa": "پروسس از قبل بسته شده بود", "en": "Process was already closed"},
+    "kill_denied": {"fa": "دسترسی کافی نیست؛ با ادمین اجرا کن", "en": "Access denied; run as administrator"},
+    "kill_system": {"fa": "پروسس سیستمی است؛ بسته نشد", "en": "System process; not closed"},
+    "kill_err": {"fa": "خطا", "en": "Error"},
+    # ---- نام‌های فارسی/انگلیسی برنامه‌های اینترنت‌خور ----
+    "hog_chrome.exe": {"fa": "مرورگر کروم", "en": "Chrome browser"},
+    "hog_firefox.exe": {"fa": "مرورگر فایرفاکس", "en": "Firefox browser"},
+    "hog_msedge.exe": {"fa": "مرورگر اج", "en": "Edge browser"},
+    "hog_opera.exe": {"fa": "مرورگر اپرا", "en": "Opera browser"},
+    "hog_brave.exe": {"fa": "مرورگر بریو", "en": "Brave browser"},
+    "hog_vivaldi.exe": {"fa": "مرورگر ویوالدی", "en": "Vivaldi browser"},
+    "hog_utorrent.exe": {"fa": "تورنت", "en": "Torrent client"},
+    "hog_qbittorrent.exe": {"fa": "تورنت", "en": "Torrent client"},
+    "hog_bittorrent.exe": {"fa": "تورنت", "en": "Torrent client"},
+    "hog_onedrive.exe": {"fa": "سینک وان‌درایو", "en": "OneDrive sync"},
+    "hog_dropbox.exe": {"fa": "سینک دراپ‌باکس", "en": "Dropbox sync"},
+    "hog_googledrivesync.exe": {"fa": "سینک گوگل درایو", "en": "Google Drive sync"},
+    "hog_googledrivefs.exe": {"fa": "سینک گوگل درایو", "en": "Google Drive sync"},
+    "hog_epicgameslauncher.exe": {"fa": "لانچر اپیک", "en": "Epic launcher"},
+    "hog_ubisoftconnect.exe": {"fa": "لانچر یوبی‌سافت", "en": "Ubisoft launcher"},
+    "hog_eadesktop.exe": {"fa": "لانچر EA", "en": "EA launcher"},
+    "hog_battle.net.exe": {"fa": "لانچر بتل‌نت", "en": "Battle.net launcher"},
+    "hog_riotclientservices.exe": {"fa": "کلاینت رایوت", "en": "Riot client"},
+    "hog_spotify.exe": {"fa": "اسپاتیفای", "en": "Spotify"},
+    "hog_telegram.exe": {"fa": "تلگرام دسکتاپ", "en": "Telegram desktop"},
+    "hog_whatsapp.exe": {"fa": "واتس‌اپ دسکتاپ", "en": "WhatsApp desktop"},
+    "hog_discord.exe": {"fa": "دیسکورد", "en": "Discord"},
+    "hog_skype.exe": {"fa": "اسکایپ", "en": "Skype"},
+    "hog_zoom.exe": {"fa": "زوم", "en": "Zoom"},
+    "hog_teams.exe": {"fa": "تیمز", "en": "Teams"},
+    "hog_slack.exe": {"fa": "اسلک", "en": "Slack"},
+}
+
+
+def set_lang(lang):
+    global _current
+    if lang in LANGS:
+        _current = lang
+
+
+def get_lang():
+    return _current
+
+
+def tr(key):
+    return STRINGS.get(key, {}).get(_current, key)
+
+
+def fa_digits(s):
+    if _current == "fa":
+        return str(s).translate(str.maketrans("0123456789.", "۰۱۲۳۴۵۶۷۸۹٫"))
+    return str(s)
