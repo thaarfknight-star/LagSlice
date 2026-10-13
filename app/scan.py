@@ -13,6 +13,8 @@
 سرور قطع (TCP ناموفق): score = 1_000_000
 """
 
+import ctypes
+import ipaddress
 import re
 import socket
 import subprocess
@@ -27,14 +29,71 @@ from servers import DEFAULT_RTMP_PORT
 DOWN_SCORE = 1_000_000.0
 
 
+def _icmp_echo_once(iphlpapi, kernel32, handle, dest, timeout_ms):
+    """یک اکوی ICMP؛ برمی‌گرداند RTT به میلی‌ثانیه یا None."""
+    req = b"LagSlicePing" * 2  # 24 بایت داده‌ی درخواست
+    reply = ctypes.create_string_buffer(1024)
+    n = iphlpapi.IcmpSendEcho(handle, dest, req, len(req), None,
+                              reply, len(reply), timeout_ms)
+    if not n:
+        return None
+    # struct ICMP_ECHO_REPLY: فیلد RoundTripTime در آفست ۸ است
+    return float(int.from_bytes(bytes(reply[8:12]), "little"))
+
+
+def _ping_host_icmp(host, count, timeout_s):
+    """پینگ بدون اسپاون هیچ پروسه‌ای با IcmpSendEcho ویندوز.
+
+    برمی‌گرداند (avg_ms, loss_pct)؛ در صورت عدم دسترسی (None, 100).
+    به دسترسی ادمین نیاز ندارد.
+    """
+    try:
+        dest = int(ipaddress.IPv4Address(socket.gethostbyname(host)))
+    except Exception:
+        return None, 100.0
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    kernel32 = ctypes.WinDLL("kernel32")
+    iphlpapi.IcmpCreateFile.restype = ctypes.c_void_p
+    iphlpapi.IcmpSendEcho.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ushort,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+    ]
+    iphlpapi.IcmpSendEcho.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = iphlpapi.IcmpCreateFile()
+    if not handle:
+        return None, 100.0
+    timeout_ms = max(1, int(timeout_s * 1000))
+    rtts = []
+    try:
+        for _ in range(count):
+            rtt = _icmp_echo_once(iphlpapi, kernel32, handle, dest, timeout_ms)
+            if rtt is not None:
+                rtts.append(rtt)
+    finally:
+        kernel32.CloseHandle(handle)
+    if not rtts:
+        return None, 100.0
+    loss = (count - len(rtts)) / count * 100.0
+    return sum(rtts) / len(rtts), loss
+
+
 def ping_host(host, count=2, timeout_s=2):
-    """میانگین پینگ (ms) و درصد packet loss؛ در صورت عدم دسترسی (None, 100)."""
+    """میانگین پینگ (ms) و درصد packet loss؛ در صورت عدم دسترسی (None, 100).
+
+    روی ویندوز: IcmpSendEcho بدون هیچ پروسه‌ای (دستور طه).
+    روی بقیه: ping بومی سیستم (مثل StreamScanner).
+    """
     if not host:
         return None, 100.0
+    count = max(1, int(count or 1))
     if sys.platform == "win32":
-        cmd = ["ping", "-n", str(count), "-w", str(int(timeout_s * 1000)), host]
-    else:
-        cmd = ["ping", "-c", str(count), "-W", str(max(1, int(timeout_s))), host]
+        try:
+            return _ping_host_icmp(host, count, timeout_s)
+        except Exception:
+            return None, 100.0
+    # غیر ویندوز: ping بومی سیستم (مثل StreamScanner)
+    cmd = ["ping", "-c", str(count), "-W", str(max(1, int(timeout_s))), host]
     try:
         kw = {}
         if sys.platform == "win32":
