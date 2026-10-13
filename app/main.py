@@ -19,7 +19,22 @@ from netmon import NetMonitor, delay_health
 from procman import (
     iter_processes, kill_process, stream_mode_cleanup,
     load_safelist, save_safelist, is_admin, base_dir,
+    NEVER_TOUCH, HOG_PATTERNS,
 )
+import psutil
+
+
+def _fmt_rate(bps):
+    """12345678 -> '12.3 Mbps' (digits localized by caller via fa_digits)."""
+    try:
+        bps = float(bps)
+    except Exception:
+        return "—"
+    if bps >= 1e6:
+        return f"{bps / 1e6:.1f} Mbps"
+    if bps >= 1e3:
+        return f"{bps / 1e3:.0f} Kbps"
+    return f"{bps:.0f} bps"
 
 __version__ = "0.2.0"
 
@@ -295,6 +310,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
         self._update_delay_card()
+        self.refresh_procs()
 
     def show_about(self):
         AboutDialog(self).exec()
@@ -331,7 +347,50 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(w, "")
 
     def refresh_procs(self):
+        per_proc = (getattr(self, "_last_stats", None) or {}).get("per_proc") or {}
+        if per_proc:
+            # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
+            rows = []
+            for pid, e in per_proc.items():
+                try:
+                    name = psutil.Process(int(pid)).name() or ""
+                except Exception:
+                    continue
+                lname = name.lower()
+                if lname in NEVER_TOUCH or lname in self.safelist:
+                    continue
+                kind = "hog" if lname in HOG_PATTERNS else "other"
+                hog_key = "hog_" + lname
+                rows.append({
+                    "pid": int(pid), "name": name,
+                    "up": e.get("up_bps", 0.0), "down": e.get("down_bps", 0.0),
+                    "kind": kind,
+                    "fa": tr(hog_key) if kind == "hog" and tr(hog_key) != hog_key else "",
+                })
+            rows.sort(key=lambda x: x["up"], reverse=True)
+            self.proc_table.setHorizontalHeaderLabels(
+                [tr("col_app"), tr("col_up"), tr("col_down"), tr("col_pid"), ""])
+            self.proc_table.setRowCount(len(rows))
+            for r, p in enumerate(rows):
+                label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
+                if p["kind"] == "hog":
+                    label = "🔥 " + label
+                self.proc_table.setItem(r, 0, QtWidgets.QTableWidgetItem(label))
+                self.proc_table.setItem(
+                    r, 1, QtWidgets.QTableWidgetItem(fa_digits(_fmt_rate(p["up"]))))
+                self.proc_table.setItem(
+                    r, 2, QtWidgets.QTableWidgetItem(fa_digits(_fmt_rate(p["down"]))))
+                self.proc_table.setItem(
+                    r, 3, QtWidgets.QTableWidgetItem(fa_digits(p["pid"])))
+                btn = QtWidgets.QPushButton(tr("btn_kill"))
+                btn.setObjectName("Danger")
+                btn.clicked.connect(lambda _=False, pid=p["pid"]: self._kill_one(pid))
+                self.proc_table.setCellWidget(r, 4, btn)
+            self.proc_table.resizeColumnsToContents()
+            return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
+        self.proc_table.setHorizontalHeaderLabels(
+            [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         self.proc_table.setRowCount(len(procs))
         for r, p in enumerate(procs):
             label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
@@ -462,10 +521,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
     # ---------- شبکه ----------
     def _on_net_stats(self, s):
+        self._last_stats = s
         self.card_up.set(fa_digits(f'{s["up_mbps"]:.1f}') + " Mbps")
         self.card_down.set(fa_digits(f'{s["down_mbps"]:.1f}') + " Mbps")
         if s["ping_ms"] is not None:
-            extra = f' ({tr("jitter")} {fa_digits(f'{s["jitter_ms"]:.0f}')})' if s["jitter_ms"] is not None else ""
+            extra = f' ({tr("jitter")} {fa_digits(f"{s["jitter_ms"]:.0f}")})' if s["jitter_ms"] is not None else ""
             self.card_ping.set(fa_digits(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
             self.card_ping.set(tr("disconnected"), RED)

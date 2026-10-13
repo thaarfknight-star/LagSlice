@@ -16,6 +16,8 @@ from collections import deque
 import psutil
 from PyQt6 import QtCore
 
+from estats import ProcNetMonitor
+
 
 class NetMonitor(QtCore.QThread):
     """هر ۱ ثانیه آمار شبکه را می‌خواند و سیگنال می‌فرستد."""
@@ -29,12 +31,15 @@ class NetMonitor(QtCore.QThread):
         self._last = None
         self._last_t = None
         self._ping_hist = deque(maxlen=10)
+        self._procmon = ProcNetMonitor()
+        self._tick = 0
 
     def stop(self):
         self._running = False
 
     def run(self):
         psutil.net_io_counters()  # مقدار اولیه
+        self._procmon.sample()  # baseline برای EStats
         while self._running:
             t0 = time.time()
             cur = psutil.net_io_counters()
@@ -45,6 +50,15 @@ class NetMonitor(QtCore.QThread):
             else:
                 up, down = 0.0, 0.0
             self._last, self._last_t = cur, t0
+
+            # آمار per-process هر ۲ تیک (EStats کمی سنگین است)
+            self._tick += 1
+            per_proc = {}
+            if self._tick % 2 == 0:
+                try:
+                    per_proc = self._procmon.sample()
+                except Exception:
+                    per_proc = {}
 
             servers = self._get_servers() or []
             ping_ms, jitter_ms = None, None
@@ -63,6 +77,7 @@ class NetMonitor(QtCore.QThread):
                 "ping_ms": ping_ms,
                 "jitter_ms": jitter_ms,
                 "server": servers[0] if servers else "",
+                "per_proc": per_proc,
             }
             # emit مستقیم امن است (سیگنال‌های Qt بین تردی صف می‌شوند)
             self.updated.emit(stats)

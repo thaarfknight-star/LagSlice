@@ -65,6 +65,8 @@ STRINGS = {
     },
     "col_app": {"fa": "برنامه", "en": "App"},
     "col_pid": {"fa": "PID", "en": "PID"},
+    "col_up": {"fa": "آپلود", "en": "Upload"},
+    "col_down": {"fa": "دانلود", "en": "Download"},
     "col_cpu": {"fa": "CPU ٪", "en": "CPU %"},
     "col_ram": {"fa": "RAM (MB)", "en": "RAM (MB)"},
     "btn_kill": {"fa": "بستن", "en": "Kill"},
