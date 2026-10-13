@@ -1,183 +1,140 @@
 # -*- coding: utf-8 -*-
-"""مدیریت پروسس‌ها: شناسایی برنامه‌های اینترنت‌خور، بستن امن با لیست امن.
+"""مدیریت پردازش‌ها و لیست امن LagSlice.
 
-نکته‌ی صادقانه: روی ویندوز آمار دقیق «مصرف اینترنت هر پروسس» بدون درایور
-ممکن نیست؛ پس «کاندیداهای بستن» را با فهرست شناختی (مرورگرها، تورنت،
-سینک ابری، لانچرها، آپدیترها) + مصرف CPU/RAM شناسایی می‌کنیم و هرگز به
-پروسس‌های سیستمی یا لیست امن دست نمی‌زنیم.
+- فهرست پردازش‌های قابل‌بستن (پردازش‌های سیستمی حیاتی حذف می‌شوند)
+- «اینترنت‌خورهای شناخته‌شده»: مرورگرها، پیام‌رسان‌ها، سینک ابری، لانچرها
+- لیست امن: نام exeهایی که هرگز بسته نمی‌شوند (پیش‌فرض: CS2، استیم، MeldStudio)
 """
+
 import json
 import os
-import sys
 
-import psutil
+try:
+    import psutil
+    _PSUTIL_OK = True
+except Exception:
+    psutil = None
+    _PSUTIL_OK = False
 
-__version__ = "0.1.0"
-
-
-def base_dir():
-    """پوشه‌ی قابل نوشتن برنامه: کنار فایل اجرایی (حالت frozen) یا پوشه‌ی app."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
-
-
-SAFELIST_PATH = os.path.join(base_dir(), "safelist.json")
-
-# پروسس‌هایی که هرگز نباید بسته شوند (سیستمی/حیاتی ویندوز)
-NEVER_TOUCH = {
+# پردازش‌های سیستمی که هرگز نمایش/بسته نمی‌شوند
+SYSTEM_PROC = {
     "system", "registry", "smss.exe", "csrss.exe", "wininit.exe",
-    "services.exe", "lsass.exe", "svchost.exe", "dwm.exe", "explorer.exe",
-    "winlogon.exe", "fontdrvhost.exe", "conhost.exe", "sihost.exe",
-    "taskhostw.exe", "runtimebroker.exe", "searchindexer.exe",
-    "audiodg.exe", "ctfmon.exe", "dllhost.exe", "wudfhost.exe",
-    "idle", "memory compression",
+    "services.exe", "lsass.exe", "svchost.exe", "winlogon.exe",
+    "dwm.exe", "sihost.exe", "taskhostw.exe", "ctfmon.exe",
+    "conhost.exe", "fontdrvhost.exe", "lsaiso.exe",
 }
 
-# الگوهای برنامه‌های معمولاً اینترنت‌خور و غیرضروری حین استریم
-HOG_PATTERNS = {
+# اینترنت‌خورهای شناخته‌شده: exe -> توضیح فارسی
+KNOWN_HOGS = {
     "chrome.exe": "مرورگر کروم",
-    "firefox.exe": "مرورگر فایرفاکس",
     "msedge.exe": "مرورگر اج",
+    "firefox.exe": "فایرفاکس",
     "opera.exe": "مرورگر اپرا",
     "brave.exe": "مرورگر بریو",
     "vivaldi.exe": "مرورگر ویوالدی",
-    "utorrent.exe": "تورنت",
-    "qbittorrent.exe": "تورنت",
-    "bittorrent.exe": "تورنت",
-    "onedrive.exe": "سینک وان‌درایو",
-    "dropbox.exe": "سینک دراپ‌باکس",
-    "googledrivesync.exe": "سینک گوگل درایو",
-    "googledrivefs.exe": "سینک گوگل درایو",
-    "epicgameslauncher.exe": "لانچر اپیک",
-    "ubisoftconnect.exe": "لانچر یوبی‌سافت",
-    "eadesktop.exe": "لانچر EA",
-    "battle.net.exe": "لانچر بتل‌نت",
-    "riotclientservices.exe": "کلاینت رایوت",
-    "spotify.exe": "اسپاتیفای",
-    "telegram.exe": "تلگرام دسکتاپ",
-    "whatsapp.exe": "واتس‌اپ دسکتاپ",
     "discord.exe": "دیسکورد",
-    "skype.exe": "اسکایپ",
+    "telegram.exe": "تلگرام",
+    "whatsapp.exe": "واتس‌اپ",
+    "onedrive.exe": "وان‌درایو",
+    "dropbox.exe": "دراپ‌باکس",
+    "googledrivefs.exe": "گوگل درایو",
+    "spotify.exe": "اسپاتیفای",
+    "epicgameslauncher.exe": "لانچر اپیک",
+    "gog galaxy.exe": "لانچر GOG",
+    "ubisoftconnect.exe": "یوبی‌سافت کانکت",
+    "eadesktop.exe": "اپ EA",
+    "battle.net.exe": "بتل‌نت",
+    "qbittorrent.exe": "تورنت",
+    "utorrent.exe": "تورنت",
     "zoom.exe": "زوم",
+    "skype.exe": "اسکایپ",
     "teams.exe": "تیمز",
-    "slack.exe": "اسلک",
 }
 
-DEFAULT_SAFELIST = [
-    # بازی و استریم — هرگز بسته نمی‌شوند
+# پیش‌فرض لیست امن: این‌ها هرگز بسته نمی‌شوند
+DEFAULT_SAFE = [
     "cs2.exe",
-    "meldstudio.exe",
-    "meld.exe",
-    "obs64.exe",
-    "obs32.exe",
     "steam.exe",
     "steamwebhelper.exe",
     "gameoverlayui.exe",
-    "lagslice.exe",
-    "lagslice_admin.exe",
-    # ابزارهای ارتباطی حین استریم (کاربر می‌تواند حذف کند)
-    "discord.exe",
+    "meldstudio.exe",
+    "explorer.exe",
 ]
 
 
-def default_safelist_path():
-    return SAFELIST_PATH
+def get_config_dir():
+    appdata = os.environ.get("APPDATA")
+    base = os.path.join(appdata, "LagSlice") if appdata else os.path.join(os.path.expanduser("~"), ".config", "LagSlice")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
+def _safelist_path():
+    return os.path.join(get_config_dir(), "safelist.json")
 
 
 def load_safelist():
     try:
-        with open(SAFELIST_PATH, "r", encoding="utf-8") as fh:
+        with open(_safelist_path(), "r", encoding="utf-8") as fh:
             data = json.load(fh)
             if isinstance(data, list):
-                return {s.strip().lower() for s in data if s.strip()}
+                return [str(x).lower() for x in data]
     except (OSError, ValueError):
         pass
-    return {s.lower() for s in DEFAULT_SAFELIST}
+    return list(DEFAULT_SAFE)
 
 
-def save_safelist(names):
-    clean = sorted({n.strip().lower() for n in names if n.strip()})
-    with open(SAFELIST_PATH, "w", encoding="utf-8") as fh:
-        json.dump(clean, fh, ensure_ascii=False, indent=2)
-    return clean
+def save_safelist(items):
+    items = sorted({str(x).strip().lower() for x in items if str(x).strip()})
+    with open(_safelist_path(), "w", encoding="utf-8") as fh:
+        json.dump(items, fh, ensure_ascii=False, indent=2)
+    return items
 
 
-def classify(name):
-    """برمی‌گرداند: 'never' | 'safe' | 'hog' | 'other'"""
-    n = (name or "").lower()
-    if n in NEVER_TOUCH:
-        return "never"
-    return "other"  # safe/hog با توجه به لیست امن و الگوها تعیین می‌شود
+def psutil_available():
+    return _PSUTIL_OK
 
 
-def iter_processes(safelist):
-    """لیست پروسس‌های کاربر؛ هر کدام: pid, name, cpu, mem_mb, kind."""
+def list_processes():
+    """فهرست پردازش‌های کاربر (بدون سیستمی‌ها)."""
     out = []
-    for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+    if not _PSUTIL_OK:
+        return out
+    safe = set(load_safelist())
+    for p in psutil.process_iter(["pid", "name", "memory_info"]):
         try:
-            name = (p.info["name"] or "").strip()
+            name = (p.info.get("name") or "").strip()
             if not name:
                 continue
             lname = name.lower()
-            if classify(name) == "never":
+            if lname in SYSTEM_PROC or lname in safe:
                 continue
-            if lname in safelist:
-                kind = "safe"
-            elif lname in HOG_PATTERNS:
-                kind = "hog"
-            else:
-                kind = "other"
-            mem = p.info["memory_info"]
+            mem = p.info.get("memory_info")
+            mem_mb = round((mem.rss if mem else 0) / (1024 * 1024), 1)
             out.append({
                 "pid": p.info["pid"],
                 "name": name,
-                "cpu": round(p.info["cpu_percent"] or 0.0, 1),
-                "mem_mb": round((mem.rss if mem else 0) / 1024 / 1024, 1),
-                "kind": kind,
-                "fa": HOG_PATTERNS.get(lname, ""),
+                "mem_mb": mem_mb,
+                "is_hog": lname in KNOWN_HOGS,
+                "hog_desc": KNOWN_HOGS.get(lname, ""),
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    out.sort(key=lambda x: ({"hog": 0, "other": 1, "safe": 2}[x["kind"]], -x["mem_mb"]))
+    out.sort(key=lambda d: (not d["is_hog"], -d["mem_mb"]))
     return out
 
 
 def kill_process(pid):
-    """بستن امن یک پروسس؛ اول terminate، بعد kill."""
+    if not _PSUTIL_OK:
+        return False, "psutil در دسترس نیست"
     try:
         p = psutil.Process(pid)
         name = p.name()
-        if classify(name) == "never":
-            return False, "پروسس سیستمی است؛ بسته نشد"
-        p.terminate()
-        try:
-            p.wait(timeout=3)
-        except psutil.TimeoutExpired:
-            p.kill()
-        return True, f"{name} بسته شد"
+        p.kill()
+        return True, name
     except psutil.NoSuchProcess:
-        return False, "پروسس از قبل بسته شده بود"
+        return False, "پردازش از قبل بسته شده"
     except psutil.AccessDenied:
-        return False, "دسترسی کافی نیست؛ با ادمین اجرا کن"
-    except Exception as e:
-        return False, f"خطا: {e}"
-
-
-def stream_mode_cleanup(safelist):
-    """بستن همه‌ی کاندیداهای اینترنت‌خور که در لیست امن نیستند."""
-    killed, skipped = [], []
-    for proc in iter_processes(safelist):
-        if proc["kind"] != "hog":
-            continue
-        ok, msg = kill_process(proc["pid"])
-        (killed if ok else skipped).append(f'{proc["name"]}: {msg}')
-    return killed, skipped
-
-
-def is_admin():
-    try:
-        import ctypes
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
+        return False, "دسترسی ندارید (با ادمین اجرا کنید)"
+    except Exception as exc:
+        return False, str(exc)
