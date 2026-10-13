@@ -56,3 +56,65 @@ jobs:
         path: |
           dist/LagSlice-source-*.zip
           THIRD_PARTY_NOTICES
+
+  release:
+    name: Auto-release on version bump (AGPL)
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Read version
+      id: ver
+      shell: pwsh
+      run: |
+        $v = (Get-Content version.txt -Raw).Trim()
+        "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Check if release already exists
+      id: chk
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        gh release view "v${{ steps.ver.outputs.version }}" --json tagName > $null 2>&1
+        if ($LASTEXITCODE -eq 0) { "exists=true" } else { "exists=false" } | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Download EXE artifact
+      if: steps.chk.outputs.exists == 'false'
+      uses: actions/download-artifact@v4
+      with:
+        name: LagSlice-win
+        path: rel-assets/win
+
+    - name: Download source artifacts
+      if: steps.chk.outputs.exists == 'false'
+      uses: actions/download-artifact@v4
+      with:
+        name: LagSlice-source
+        path: rel-assets/src
+
+    - name: Create GitHub Release
+      if: steps.chk.outputs.exists == 'false'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $ver = "${{ steps.ver.outputs.version }}"
+        $notes = @"
+        LagSlice v$ver — بهینه‌ساز استریم (ویندوز)
+
+        اجرا: فایل LagSlice.exe را دانلود و با Run as administrator اجرا کنید.
+        Run: download LagSlice.exe and run as administrator.
+
+        سورس‌کد همین نسخه + اعلامیه‌های شخص ثالث ضمیمه شده است (تعهد AGPL-3.0).
+        Corresponding source + third-party notices attached (AGPL-3.0).
+        "@
+        gh release create "v$ver" --title "LagSlice v$ver" --notes $notes `
+          rel-assets/win/LagSlice.exe `
+          rel-assets/src/dist/LagSlice-source-v$ver.zip `
+          rel-assets/src/THIRD_PARTY_NOTICES
