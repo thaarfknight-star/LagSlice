@@ -77,13 +77,15 @@ jobs:
 
     - name: Check if release already exists
       id: chk
-      shell: pwsh
+      shell: bash
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        gh release view "v${{ steps.ver.outputs.version }}" --json tagName > $null 2>&1
-        if ($LASTEXITCODE -eq 0) { $exists = "true" } else { $exists = "false" }
-        "exists=$exists" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        if gh release view "v${{ steps.ver.outputs.version }}" --json tagName >/dev/null 2>&1; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+        fi
 
     - name: Download EXE artifact
       if: steps.chk.outputs.exists == 'false'
