@@ -82,7 +82,8 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         gh release view "v${{ steps.ver.outputs.version }}" --json tagName > $null 2>&1
-        if ($LASTEXITCODE -eq 0) { "exists=true" } else { "exists=false" } | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        if ($LASTEXITCODE -eq 0) { $exists = "true" } else { $exists = "false" }
+        "exists=$exists" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
     - name: Download EXE artifact
       if: steps.chk.outputs.exists == 'false'
@@ -115,6 +116,6 @@ jobs:
         Corresponding source + third-party notices attached (AGPL-3.0).
         "@
         gh release create "v$ver" --title "LagSlice v$ver" --notes $notes `
-          rel-assets/win/LagSlice.exe `
-          rel-assets/src/dist/LagSlice-source-v$ver.zip `
-          rel-assets/src/THIRD_PARTY_NOTICES
+          (Get-ChildItem -Path rel-assets -Filter "LagSlice.exe" -Recurse | Select-Object -First 1).FullName `
+          (Get-ChildItem -Path rel-assets -Filter "LagSlice-source-*.zip" -Recurse | Select-Object -First 1).FullName `
+          (Get-ChildItem -Path rel-assets -Filter "THIRD_PARTY_NOTICES" -Recurse | Select-Object -First 1).FullName
