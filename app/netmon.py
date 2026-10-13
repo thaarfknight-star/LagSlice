@@ -10,6 +10,7 @@
 import re
 import subprocess
 import platform
+import sys
 import time
 from collections import deque
 
@@ -91,7 +92,15 @@ class NetMonitor(QtCore.QThread):
                 cmd = ["ping", "-n", "1", "-w", "1000", host]
             else:
                 cmd = ["ping", "-c", "1", "-W", "1", host]
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            # ویندوز: مخفی‌سازی پنجره‌ی cmd (وگرنه هر ثانیه یک پنجره باز/بسته می‌شود)
+            kwargs = {}
+            if sys.platform == "win32":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                kwargs = dict(startupinfo=si,
+                              creationflags=subprocess.CREATE_NO_WINDOW)
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=5, **kwargs)
             m = re.search(r"time[=<](\d+(?:\.\d+)?)\s*ms", out.stdout)
             if m:
                 return float(m.group(1))
