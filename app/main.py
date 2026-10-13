@@ -83,7 +83,7 @@ AMBER = "#FFB020"
 RED = "#FF4D5E"
 
 QSS = f"""
-QWidget {{ background-color: {BG}; color: {TEXT}; font-family: "Segoe UI", Tahoma, sans-serif; font-size: 13px; }}
+QWidget {{ background-color: {BG}; color: {TEXT}; font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif; font-size: 13px; }}
 QLabel#Title {{ font-size: 22px; font-weight: bold; color: {CYAN}; }}
 QLabel#Sub {{ font-size: 12px; color: {MUTED}; }}
 QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
@@ -579,6 +579,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
+    # فونت وزیرمتن (باندل‌شده در exe؛ OFL)
+    for _f in ("fonts/Vazirmatn-Regular.ttf", "fonts/Vazirmatn-Bold.ttf"):
+        _p = asset_path(_f)
+        if os.path.exists(_p):
+            QtGui.QFontDatabase.addApplicationFont(_p)
     # جهت اولیه از کانفیگ
     cfg_lang = load_config().get("lang", "fa")
     app.setLayoutDirection(
