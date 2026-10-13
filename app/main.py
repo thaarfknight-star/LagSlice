@@ -11,6 +11,79 @@
 import json
 import os
 import sys
+import tempfile
+import threading
+import time
+import traceback
+
+
+def _crash_log_path():
+    """مسیر فایل لاگ کرش: کنار exe، وگرنه APPDATA، وگرنه temp."""
+    cands = []
+    try:
+        exe_dir = os.path.dirname(sys.executable)
+        if exe_dir:
+            cands.append(os.path.join(exe_dir, "LagSlice-crash.log"))
+    except Exception:
+        pass
+    try:
+        base = os.environ.get("APPDATA")
+        if base:
+            cands.append(os.path.join(base, "LagSlice", "LagSlice-crash.log"))
+    except Exception:
+        pass
+    cands.append(os.path.join(tempfile.gettempdir(), "LagSlice-crash.log"))
+    for p in cands:
+        try:
+            d = os.path.dirname(p)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(p, "a", encoding="utf-8"):
+                pass
+            return p
+        except Exception:
+            continue
+    return cands[-1]
+
+
+def _install_crash_hook():
+    """هر exception درمان‌نشده (نخ اصلی و نخ‌ها) با traceback در فایل لاگ."""
+    def _write(text):
+        try:
+            with open(_crash_log_path(), "a", encoding="utf-8") as fh:
+                fh.write(text)
+        except Exception:
+            pass
+
+    def _hook(exc_type, exc_value, exc_tb):
+        try:
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            _write(f"\n===== LagSlice crash @ {ts} =====\n{text}")
+        except Exception:
+            pass
+        try:
+            from PyQt6 import QtWidgets
+            if QtWidgets.QApplication.instance() is not None:
+                QtWidgets.QMessageBox.critical(
+                    None, "LagSlice",
+                    "برنامه با خطای غیرمنتظره‌ای مواجه شد.\n"
+                    f"جزئیات در این فایل ذخیره شد:\n{_crash_log_path()}")
+        except Exception:
+            pass
+        try:
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+        except Exception:
+            pass
+
+    def _thread_hook(args):
+        _hook(args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = _hook
+    threading.excepthook = _thread_hook
+
+
+_install_crash_hook()
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
