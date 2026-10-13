@@ -58,6 +58,17 @@ def asset_path(name):
 LOGO_PATH = asset_path("lagslice-logo.png")
 
 
+def guide_path():
+    """مسیر PDF راهنما: اول _MEIPASS (exe)، بعد docs/ سورس."""
+    for p in (
+        os.path.join(getattr(sys, "_MEIPASS", ""), "docs", "LagSlice-guide-fa.pdf"),
+        os.path.join(APP_DIR, "..", "docs", "LagSlice-guide-fa.pdf"),
+    ):
+        if os.path.exists(p):
+            return p
+    return None
+
+
 def about_text():
     """متن دیالوگ درباره: از فایل docs باندل‌شده، وگرنه متن داخلی."""
     for p in (
@@ -90,13 +101,15 @@ QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
 QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
 QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
 QFrame#Card {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
-QPushButton {{ background-color: #16202F; border: 1px solid {CYAN}; border-radius: 10px; padding: 10px 18px; color: {TEXT}; font-weight: bold; }}
+QPushButton {{ background-color: #16202F; border: 1px solid {CYAN}; border-radius: 10px; color: {TEXT}; font-weight: bold; }}
 QPushButton:hover {{ background-color: #1B2940; }}
 QPushButton:disabled {{ border-color: #3A4356; color: #5B6577; background-color: #121826; }}
 QPushButton#Go {{ border-color: {GREEN}; font-size: 15px; padding: 14px; }}
 QPushButton#Stop {{ border-color: {RED}; font-size: 15px; padding: 14px; }}
 QPushButton#Danger {{ border-color: {MAGENTA}; }}
 QPushButton#Lang {{ border-color: {MAGENTA}; padding: 6px 14px; }}
+/* دکمه‌های بیرون جدول: پدینگ (داخل QTableWidget در RTL باگ دارد) */
+QDialog QPushButton, QTabWidget QPushButton {{ padding: 10px 18px; }}
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; }}
 QTabBar::tab {{ background: {CARD}; color: {MUTED}; padding: 8px 18px; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
 QTabBar::tab:selected {{ color: {CYAN}; border-bottom: 2px solid {CYAN}; }}
@@ -146,9 +159,34 @@ class StatCard(QtWidgets.QFrame):
 
     def retranslate(self):
         self.name_lbl.setText(tr(self._name_key))
+        # حسابرسی RTL: لیبل فارسی راست‌چین؛ مقدار عددی همیشه چپ‌چین/LTR
+        rtl = get_lang() == "fa"
+        self.name_lbl.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight if rtl
+            else QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
+        self.val_lbl.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight if rtl
+            else QtCore.Qt.AlignmentFlag.AlignLeft)
 
     def set(self, text, color=None):
         self.val_lbl.setText(text)
+        # مقادیر عددی (ms/Mbps/IP/—) همیشه چپ‌چین/LTR؛ وضعیت‌های متنی با جهت زبان
+        import re as _re
+        is_numeric = bool(_re.search(r"[0-9۰-۹٫.]|ms|Mbps|Kbps|bps|—|-", str(text)))
+        if is_numeric:
+            self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
+            self.val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                      | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        else:
+            if get_lang() == "fa":
+                self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.RightToLeft)
+                self.val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight
+                                          | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            else:
+                self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
+                self.val_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                          | QtCore.Qt.AlignmentFlag.AlignVCenter)
         if color:
             self.val_lbl.setStyleSheet(f"color: {color};")
 
@@ -169,9 +207,66 @@ class AboutDialog(QtWidgets.QDialog):
         txt.setReadOnly(True)
         txt.setPlainText(about_text())
         lay.addWidget(txt)
-        btn = QtWidgets.QPushButton("OK")
+        btn = QtWidgets.QPushButton(tr("ok"))
         btn.clicked.connect(self.accept)
         lay.addWidget(btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+
+
+class SafePickDialog(QtWidgets.QDialog):
+    """افزودن به لیست امن با انتخاب از برنامه‌های در حال اجرا (جست‌وجو + تیک)."""
+
+    def __init__(self, safelist, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(tr("safe_pick_title"))
+        self.resize(420, 480)
+        lay = QtWidgets.QVBoxLayout(self)
+        self.search = QtWidgets.QLineEdit()
+        self.search.setPlaceholderText(tr("safe_pick_search"))
+        self.search.textChanged.connect(self._filter)
+        lay.addWidget(self.search)
+        self.list = QtWidgets.QListWidget()
+        self.list.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        lay.addWidget(self.list)
+        self._names = []
+        seen = set()
+        for p in psutil.process_iter(["name"]):
+            try:
+                n = (p.info.get("name") or "").strip().lower()
+            except Exception:
+                continue
+            if not n or n in seen or n in NEVER_TOUCH or n in safelist:
+                continue
+            seen.add(n)
+            self._names.append(n)
+        for n in sorted(self._names):
+            it = QtWidgets.QListWidgetItem(n)
+            it.setFlags(it.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            it.setCheckState(QtCore.Qt.CheckState.Unchecked)
+            self.list.addItem(it)
+        if not self._names:
+            self.list.addItem(tr("safe_pick_empty"))
+        row = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton(tr("safe_pick_add"))
+        add_btn.clicked.connect(self.accept)
+        cancel_btn = QtWidgets.QPushButton(tr("safe_pick_cancel"))
+        cancel_btn.clicked.connect(self.reject)
+        row.addWidget(add_btn)
+        row.addWidget(cancel_btn)
+        lay.addLayout(row)
+
+    def _filter(self, text):
+        q = text.strip().lower()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            it.setHidden(bool(q) and q not in it.text().lower())
+
+    def selected(self):
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            if it.checkState() == QtCore.Qt.CheckState.Checked:
+                out.append(it.text())
+        return out
 
 
 class LagSliceWindow(QtWidgets.QMainWindow):
@@ -215,6 +310,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_about.setObjectName("Lang")
         self.btn_about.clicked.connect(self.show_about)
         head.addWidget(self.btn_about)
+        self.btn_help = QtWidgets.QPushButton()
+        self.btn_help.setObjectName("Lang")
+        self.btn_help.clicked.connect(self.show_help)
+        head.addWidget(self.btn_help)
         self.pill = QtWidgets.QLabel()
         self.pill.setObjectName("Pill")
         head.addWidget(self.pill)
@@ -284,12 +383,22 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.log(tr("log_lang_changed"))
 
     def apply_language(self):
+        rtl = get_lang() == "fa"
+        align = (QtCore.Qt.AlignmentFlag.AlignRight if rtl
+                 else QtCore.Qt.AlignmentFlag.AlignLeft)
         self.sub_lbl.setText(tr("app_subtitle"))
-        self.btn_lang.setText("EN" if get_lang() == "fa" else "فا")
+        self.btn_lang.setText("EN" if rtl else "فا")
         self.btn_about.setText(tr("about_btn"))
+        self.btn_help.setText(tr("help_btn"))
         self.warn_lbl.setText(tr("admin_warn"))
+        self.warn_lbl.setAlignment(align)
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
             c.retranslate()
+        self.card_ping.setToolTip(tr("ping_server_hint"))
+        self.proc_hint.setAlignment(align)
+        self.safe_hint.setAlignment(align)
+        self.set_note.setAlignment(align)
+        self.ping_hint.setAlignment(align)
         self._refresh_pill()
         self._refresh_stream_btn()
         self.tabs.setTabText(0, tr("tab_procs"))
@@ -300,8 +409,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_table.setHorizontalHeaderLabels(
             [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         self.safe_hint.setText(tr("safe_hint"))
-        self.safe_input.setPlaceholderText(tr("safe_placeholder"))
-        self.btn_safe_add.setText(tr("safe_add"))
+        self.btn_safe_pick.setText(tr("safe_pick_btn"))
         self.btn_safe_del.setText(tr("safe_del"))
         self.lbl_server.setText(tr("set_server"))
         self.server_edit.setPlaceholderText(tr("set_server_ph"))
@@ -314,6 +422,13 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
     def show_about(self):
         AboutDialog(self).exec()
+
+    def show_help(self):
+        p = guide_path()
+        if not p:
+            QtWidgets.QMessageBox.warning(self, tr("help_title"), tr("help_missing"))
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))
 
     def _refresh_pill(self):
         if self.streaming:
@@ -343,6 +458,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_table = QtWidgets.QTableWidget(0, 5)
         self.proc_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.proc_table.verticalHeader().setVisible(False)
         lay.addWidget(self.proc_table)
         self.tabs.addTab(w, "")
 
@@ -429,30 +545,32 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._reload_safe_list()
         lay.addWidget(self.safe_list)
         row = QtWidgets.QHBoxLayout()
-        self.safe_input = QtWidgets.QLineEdit()
-        self.btn_safe_add = QtWidgets.QPushButton()
-        self.btn_safe_add.clicked.connect(self._safe_add)
+        self.btn_safe_pick = QtWidgets.QPushButton()
+        self.btn_safe_pick.clicked.connect(self._safe_pick)
         self.btn_safe_del = QtWidgets.QPushButton()
         self.btn_safe_del.clicked.connect(self._safe_del)
-        row.addWidget(self.safe_input)
-        row.addWidget(self.btn_safe_add)
+        row.addWidget(self.btn_safe_pick)
         row.addWidget(self.btn_safe_del)
         lay.addLayout(row)
         self.tabs.addTab(w, "")
+
+    def _safe_pick(self):
+        dlg = SafePickDialog(self.safelist, self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            added = 0
+            for n in dlg.selected():
+                if n not in self.safelist:
+                    self.safelist.add(n)
+                    added += 1
+            if added:
+                save_safelist(self.safelist)
+                self._reload_safe_list()
+                self.log(f"➕ {added} {tr('log_safe_pick')}")
 
     def _reload_safe_list(self):
         self.safe_list.clear()
         for n in sorted(self.safelist):
             self.safe_list.addItem(n)
-
-    def _safe_add(self):
-        n = self.safe_input.text().strip().lower()
-        if n:
-            self.safelist.add(n)
-            save_safelist(self.safelist)
-            self._reload_safe_list()
-            self.safe_input.clear()
-            self.log(f"➕ {n} {tr('log_safe_add')}")
 
     def _safe_del(self):
         for it in self.safe_list.selectedItems():
@@ -467,7 +585,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         lay = QtWidgets.QFormLayout(w)
         self.lbl_server = QtWidgets.QLabel()
         self.server_edit = QtWidgets.QLineEdit(", ".join(self.cfg["servers"]))
+        self.server_edit.setToolTip(tr("ping_server_hint"))
         lay.addRow(self.lbl_server, self.server_edit)
+        self.ping_hint = QtWidgets.QLabel(tr("ping_server_hint"))
+        self.ping_hint.setObjectName("Sub")
+        self.ping_hint.setWordWrap(True)
+        lay.addRow(self.ping_hint)
         self.lbl_bitrate = QtWidgets.QLabel()
         self.bitrate_spin = QtWidgets.QDoubleSpinBox()
         self.bitrate_spin.setRange(1, 50)

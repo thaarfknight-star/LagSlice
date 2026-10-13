@@ -72,8 +72,8 @@ STRINGS = {
     "btn_kill": {"fa": "بستن", "en": "Kill"},
     # ---- تب لیست امن ----
     "safe_hint": {
-        "fa": "این برنامه‌ها در «حالت استریم» هرگز بسته نمی‌شوند. اسم فایل اجرایی (مثل cs2.exe) را اضافه یا حذف کن.",
-        "en": "These apps are never closed in stream mode. Add or remove executable names (e.g. cs2.exe).",
+        "fa": "این برنامه‌ها در «حالت استریم» هرگز بسته نمی‌شوند. با «انتخاب از برنامه‌های در حال اجرا» برنامه‌ها را تیک بزن و اضافه کن.",
+        "en": "These apps are never closed in stream mode. Use “Pick from running apps” to tick and add them.",
     },
     "safe_placeholder": {"fa": "مثلاً: myapp.exe", "en": "e.g. myapp.exe"},
     "safe_add": {"fa": "➕ افزودن", "en": "➕ Add"},
@@ -99,6 +99,21 @@ STRINGS = {
     "log_safe_del": {"fa": "از لیست امن حذف شد", "en": "removed from safe list"},
     "log_settings_saved": {"fa": "💾 تنظیمات ذخیره شد", "en": "💾 Settings saved"},
     "log_lang_changed": {"fa": "🌐 زبان عوض شد", "en": "🌐 Language changed"},
+    "ok": {"fa": "تأیید", "en": "OK"},
+    "help_btn": {"fa": "📖 راهنما", "en": "📖 Help"},
+    "help_title": {"fa": "راهنمای LagSlice", "en": "LagSlice Guide"},
+    "help_missing": {"fa": "فایل راهنما پیدا نشد.", "en": "Guide file not found."},
+    "ping_server_hint": {
+        "fa": "سروری که برنامه برای اندازه‌گیری پینگ و جیتر به آن پینگ می‌زند (پیش‌فرض 8.8.8.8). عدد روی کارت «پینگ سرور» از همین‌جا می‌آید. می‌توانید سرور MasterStream یا هر سرور دیگری بگذارید؛ چند سرور را با ویرگول جدا کنید.",
+        "en": "The server the app pings to measure ping/jitter (default 8.8.8.8). The “Server ping” card shows this server's latency. You can set your MasterStream server or any other; separate multiple servers with commas.",
+    },
+    "safe_pick_btn": {"fa": "🔍 انتخاب از برنامه‌های در حال اجرا", "en": "🔍 Pick from running apps"},
+    "safe_pick_title": {"fa": "انتخاب برنامه برای لیست امن", "en": "Pick apps for the safe list"},
+    "safe_pick_search": {"fa": "جست‌وجو…", "en": "Search…"},
+    "safe_pick_add": {"fa": "افزودن انتخاب‌شده‌ها", "en": "Add selected"},
+    "safe_pick_cancel": {"fa": "انصراف", "en": "Cancel"},
+    "safe_pick_empty": {"fa": "برنامه‌ای پیدا نشد.", "en": "No apps found."},
+    "log_safe_pick": {"fa": "به لیست امن اضافه شد", "en": "added to safe list"},
     # ---- پیام‌های بستن پروسس ----
     "kill_ok": {"fa": "بسته شد", "en": "closed"},
     "kill_gone": {"fa": "پروسس از قبل بسته شده بود", "en": "Process was already closed"},
