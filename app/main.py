@@ -60,12 +60,13 @@ LOGO_PATH = asset_path("lagslice-logo.png")
 
 def guide_path():
     """مسیر PDF راهنما: اول _MEIPASS (exe)، بعد docs/ سورس."""
-    for p in (
-        os.path.join(getattr(sys, "_MEIPASS", ""), "docs", "LagSlice-guide-fa.pdf"),
-        os.path.join(APP_DIR, "..", "docs", "LagSlice-guide-fa.pdf"),
-    ):
-        if os.path.exists(p):
-            return p
+    for name in ("lagslice-help-fa.pdf", "LagSlice-guide-fa.pdf"):
+        for p in (
+            os.path.join(getattr(sys, "_MEIPASS", ""), "docs", name),
+            os.path.join(APP_DIR, "..", "docs", name),
+        ):
+            if os.path.exists(p):
+                return p
     return None
 
 
