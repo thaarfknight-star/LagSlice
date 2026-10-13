@@ -1,0 +1,17 @@
+LagSlice — Third-Party Notices
+===============================
+
+The LagSlice Windows executable bundles the following third-party
+components. Their full license texts are available from the sources
+below; the combined work is distributed under the GNU Affero General
+Public License v3.0 (see the LICENSE file in the repository root).
+
+1) PyQt6 (>= 6.6)
+   License: GNU General Public License v3.0 (GPL-3.0)
+   Copyright: Riverbank Computing Limited
+   Source: https://www.riverbankcomputing.com/software/pyqt/
+
+2) psutil (>= 5.9)
+   License: BSD 3-Clause
+   Copyright: Giampaolo Rodola
+   Source: https://github.com/giampaolo/psutil
