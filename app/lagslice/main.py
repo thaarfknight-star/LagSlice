@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 Taha Arefi
-"""رابط اصلی LagSlice — فارسی، راست‌چین، تم تیره نئونی (بر اساس لوگو)."""
+"""رابط اصلی LagSlice — دوزبانه (فارسی/انگلیسی)، راست‌چین/چپ‌چین، تم تیره نئونی.
+
+معماری دوزبانه (دستور طه): هیچ رشته‌ی نمایشی هاردکد نیست؛ همه از
+`tr(key)` در lagslice/i18n.py می‌آیند و با `retranslate_ui()` زنده
+تعویض می‌شوند.
+"""
 import json
 import os
 import sys
@@ -9,6 +14,14 @@ import sys
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from lagslice import __version__
+from lagslice.i18n import (
+    LANG_NAMES,
+    get_language,
+    is_rtl,
+    num,
+    set_language,
+    tr,
+)
 from lagslice.netmon import NetMonitor, delay_health
 from lagslice.procman import (
     iter_processes, kill_process, stream_mode_cleanup,
@@ -83,16 +96,10 @@ QTableWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-rad
 QTableWidget::item {{ padding: 4px; }}
 QHeaderView::section {{ background-color: #141C2B; color: {MUTED}; border: none; padding: 6px; }}
 QListWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
-QLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
 QTextEdit#Log {{ background-color: #080B11; border: 1px solid {BORDER}; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; }}
 QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radius: 8px; padding: 8px 12px; color: {AMBER}; }}
 """
-
-FA_DIGITS = str.maketrans("0123456789.", "۰۱۲۳۴۵۶۷۸۹٫")
-
-
-def fa(s):
-    return str(s).translate(FA_DIGITS)
 
 
 def load_config():
@@ -113,12 +120,13 @@ def save_config(cfg):
 
 
 class StatCard(QtWidgets.QFrame):
-    def __init__(self, name, parent=None):
+    def __init__(self, name_key, parent=None):
         super().__init__(parent)
+        self._name_key = name_key
         self.setObjectName("Card")
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(12, 10, 12, 10)
-        self.name_lbl = QtWidgets.QLabel(name)
+        self.name_lbl = QtWidgets.QLabel(tr(name_key))
         self.name_lbl.setObjectName("StatName")
         self.val_lbl = QtWidgets.QLabel("—")
         self.val_lbl.setObjectName("StatVal")
@@ -129,6 +137,9 @@ class StatCard(QtWidgets.QFrame):
         self.val_lbl.setText(text)
         if color:
             self.val_lbl.setStyleSheet(f"color: {color};")
+
+    def retranslate(self):
+        self.name_lbl.setText(tr(self._name_key))
 
 
 ABOUT_FALLBACK = """«LagSlice» — بهینه‌ساز استریم
@@ -160,7 +171,7 @@ def _about_text():
 class AboutDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("درباره‌ی LagSlice")
+        self.setWindowTitle(tr("about_title"))
         self.resize(480, 420)
         layout = QtWidgets.QVBoxLayout(self)
         if LOGO_PATH:
@@ -174,7 +185,7 @@ class AboutDialog(QtWidgets.QDialog):
         txt.setReadOnly(True)
         txt.setPlainText(_about_text())
         layout.addWidget(txt)
-        btn = QtWidgets.QPushButton("باشه")
+        btn = QtWidgets.QPushButton(tr("about_ok"))
         btn.clicked.connect(self.accept)
         layout.addWidget(btn)
 
@@ -182,7 +193,6 @@ class AboutDialog(QtWidgets.QDialog):
 class LagSliceWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"LagSlice ⚡ — بهینه‌ساز استریم (نسخه {__version__})")
         self.resize(980, 700)
         self.cfg = load_config()
         self.safelist = load_safelist()
@@ -201,41 +211,46 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             logo.setPixmap(pm)
             head.addWidget(logo)
         tbox = QtWidgets.QVBoxLayout()
-        title = QtWidgets.QLabel("LagSlice ⚡")
-        title.setObjectName("Title")
-        sub = QtWidgets.QLabel("بهینه‌ساز استریم — اینترنت ایران")
-        sub.setObjectName("Sub")
-        tbox.addWidget(title)
-        tbox.addWidget(sub)
+        self.title_lbl = QtWidgets.QLabel("LagSlice ⚡")
+        self.title_lbl.setObjectName("Title")
+        self.sub_lbl = QtWidgets.QLabel()
+        self.sub_lbl.setObjectName("Sub")
+        tbox.addWidget(self.title_lbl)
+        tbox.addWidget(self.sub_lbl)
         head.addLayout(tbox)
         head.addStretch(1)
-        self.pill = QtWidgets.QLabel("آماده")
+        self.pill = QtWidgets.QLabel()
         self.pill.setObjectName("Pill")
-        self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
         head.addWidget(self.pill)
-        about_btn = QtWidgets.QPushButton("ℹ درباره")
-        about_btn.clicked.connect(lambda: AboutDialog(self).exec())
-        head.addWidget(about_btn)
+        self.about_btn = QtWidgets.QPushButton()
+        self.about_btn.clicked.connect(lambda: AboutDialog(self).exec())
+        head.addWidget(self.about_btn)
+        self.lang_combo = QtWidgets.QComboBox()
+        self.lang_combo.addItems([LANG_NAMES["fa"], LANG_NAMES["en"]])
+        self.lang_combo.setCurrentText(LANG_NAMES[get_language()])
+        self.lang_combo.currentTextChanged.connect(self._on_lang_changed)
+        head.addWidget(self.lang_combo)
         root.addLayout(head)
 
+        self.warn_lbl = None
         if not is_admin():
-            warn = QtWidgets.QLabel("⚠ بدون دسترسی ادمین اجرا شدی؛ بستن بعضی برنامه‌ها کار نمی‌کند. با Run as administrator اجرا کن.")
-            warn.setObjectName("Warn")
-            warn.setWordWrap(True)
-            root.addWidget(warn)
+            self.warn_lbl = QtWidgets.QLabel()
+            self.warn_lbl.setObjectName("Warn")
+            self.warn_lbl.setWordWrap(True)
+            root.addWidget(self.warn_lbl)
 
         # --- کارت‌های آمار ---
         stats = QtWidgets.QHBoxLayout()
-        self.card_up = StatCard("آپلود لحظه‌ای")
-        self.card_down = StatCard("دانلود لحظه‌ای")
-        self.card_ping = StatCard("پینگ سرور")
-        self.card_delay = StatCard("وضعیت تأخیر ویور (تخمینی)")
+        self.card_up = StatCard("stat_up")
+        self.card_down = StatCard("stat_down")
+        self.card_ping = StatCard("stat_ping")
+        self.card_delay = StatCard("stat_delay")
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
             stats.addWidget(c)
         root.addLayout(stats)
 
         # --- دکمه حالت استریم ---
-        self.btn_stream = QtWidgets.QPushButton("🎬 شروع حالت استریم")
+        self.btn_stream = QtWidgets.QPushButton()
         self.btn_stream.setObjectName("Go")
         self.btn_stream.clicked.connect(self.toggle_stream)
         root.addWidget(self.btn_stream)
@@ -259,69 +274,137 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_timer.start(5000)
         self.refresh_procs()
 
-        self.log("LagSlice آماده است ⚡")
+        self.retranslate_ui()
+        self.log(tr("log_ready"))
+
+    # ---------- تعویض زبان ----------
+    def _on_lang_changed(self, text):
+        for code, name in LANG_NAMES.items():
+            if name == text and code != get_language():
+                set_language(code)
+                app = QtWidgets.QApplication.instance()
+                if app:
+                    app.setLayoutDirection(
+                        QtCore.Qt.LayoutDirection.RightToLeft if is_rtl()
+                        else QtCore.Qt.LayoutDirection.LeftToRight)
+                self.retranslate_ui()
+                self.log(tr("log_lang_changed"))
+                break
+
+    def retranslate_ui(self):
+        """به‌روزرسانی همه‌ی متن‌های UI به زبان فعلی."""
+        self.setWindowTitle(tr("window_title").format(v=__version__))
+        self.sub_lbl.setText(tr("app_subtitle"))
+        self.about_btn.setText(tr("about_btn"))
+        if self.warn_lbl:
+            self.warn_lbl.setText(tr("warn_no_admin"))
+        for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
+            c.retranslate()
+        self._paint_pill()
+        self._paint_stream_btn()
+        self.tabs.setTabText(0, tr("tab_procs"))
+        self.tabs.setTabText(1, tr("tab_safe"))
+        self.tabs.setTabText(2, tr("tab_settings"))
+        self.tabs.setTabText(3, tr("tab_log"))
+        self.proc_hint.setText(tr("proc_hint"))
+        self.proc_table.setHorizontalHeaderLabels(
+            [tr("col_name"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
+        self.safe_hint.setText(tr("safe_hint"))
+        self.safe_input.setPlaceholderText(tr("safe_placeholder"))
+        self.safe_add_btn.setText(tr("safe_add"))
+        self.safe_del_btn.setText(tr("safe_del"))
+        self.lbl_server.setText(tr("set_server"))
+        self.server_edit.setPlaceholderText(tr("set_server_ph"))
+        self.lbl_bitrate.setText(tr("set_bitrate"))
+        self.save_btn.setText(tr("set_save"))
+        self.set_note.setText(tr("set_note"))
+        self.lbl_lang.setText(tr("set_lang"))
+        # بازسازی جدول تا توضیحات hog هم ترجمه شوند
+        self.refresh_procs()
+
+    def _paint_pill(self):
+        if self.streaming:
+            self.pill.setText(tr("pill_streaming"))
+            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
+        else:
+            self.pill.setText(tr("pill_ready"))
+            self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
+
+    def _paint_stream_btn(self):
+        if self.streaming:
+            self.btn_stream.setText(tr("stream_stop"))
+            self.btn_stream.setObjectName("Stop")
+        else:
+            self.btn_stream.setText(tr("stream_start"))
+            self.btn_stream.setObjectName("Go")
+        self.btn_stream.setStyleSheet("")
 
     # ---------- تب برنامه‌ها ----------
     def _build_proc_tab(self):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
-        hint = QtWidgets.QLabel("برنامه‌های اینترنت‌خور (غیر لیست امن) را می‌توانی ببندی. پروسس‌های سیستمی و لیست امن هرگز نمایش داده نمی‌شوند.")
-        hint.setObjectName("Sub")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
+        self.proc_hint = QtWidgets.QLabel()
+        self.proc_hint.setObjectName("Sub")
+        self.proc_hint.setWordWrap(True)
+        lay.addWidget(self.proc_hint)
         self.proc_table = QtWidgets.QTableWidget(0, 5)
-        self.proc_table.setHorizontalHeaderLabels(["برنامه", "PID", "CPU ٪", "RAM (MB)", ""])
         self.proc_table.horizontalHeader().setStretchLastSection(True)
         self.proc_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         lay.addWidget(self.proc_table)
-        self.tabs.addTab(w, "برنامه‌ها")
+        self.tabs.addTab(w, "")
 
     def refresh_procs(self):
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
         self.proc_table.setRowCount(len(procs))
         for r, p in enumerate(procs):
-            label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
+            desc = tr(p["fa"]) if p["fa"] else ""
+            label = p["name"] + (f" ({desc})" if desc else "")
             if p["kind"] == "hog":
                 label = "🔥 " + label
             self.proc_table.setItem(r, 0, QtWidgets.QTableWidgetItem(label))
-            self.proc_table.setItem(r, 1, QtWidgets.QTableWidgetItem(fa(p["pid"])))
-            self.proc_table.setItem(r, 2, QtWidgets.QTableWidgetItem(fa(p["cpu"])))
-            self.proc_table.setItem(r, 3, QtWidgets.QTableWidgetItem(fa(p["mem_mb"])))
-            btn = QtWidgets.QPushButton("بستن")
+            self.proc_table.setItem(r, 1, QtWidgets.QTableWidgetItem(num(p["pid"])))
+            self.proc_table.setItem(r, 2, QtWidgets.QTableWidgetItem(num(p["cpu"])))
+            self.proc_table.setItem(r, 3, QtWidgets.QTableWidgetItem(num(p["mem_mb"])))
+            btn = QtWidgets.QPushButton(tr("col_close"))
             btn.setObjectName("Danger")
             btn.clicked.connect(lambda _=False, pid=p["pid"]: self._kill_one(pid))
             self.proc_table.setCellWidget(r, 4, btn)
         self.proc_table.resizeColumnsToContents()
 
     def _kill_one(self, pid):
-        ok, msg = kill_process(pid)
-        self.log(("✅ " if ok else "❌ ") + msg)
+        ok, msg_key, name = kill_process(pid)
+        if msg_key == "kill_ok":
+            text = tr(msg_key).format(name=name)
+        elif msg_key == "kill_err":
+            text = tr(msg_key).format(e=name)
+        else:
+            text = tr(msg_key)
+        self.log(("✅ " if ok else "❌ ") + text)
         self.refresh_procs()
 
     # ---------- تب لیست امن ----------
     def _build_safe_tab(self):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
-        hint = QtWidgets.QLabel("این برنامه‌ها در «حالت استریم» هرگز بسته نمی‌شوند. اسم فایل اجرایی (مثل cs2.exe) را اضافه یا حذف کن.")
-        hint.setObjectName("Sub")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
+        self.safe_hint = QtWidgets.QLabel()
+        self.safe_hint.setObjectName("Sub")
+        self.safe_hint.setWordWrap(True)
+        lay.addWidget(self.safe_hint)
         self.safe_list = QtWidgets.QListWidget()
         self._reload_safe_list()
         lay.addWidget(self.safe_list)
         row = QtWidgets.QHBoxLayout()
         self.safe_input = QtWidgets.QLineEdit()
-        self.safe_input.setPlaceholderText("مثلاً: myapp.exe")
-        btn_add = QtWidgets.QPushButton("➕ افزودن")
-        btn_add.clicked.connect(self._safe_add)
-        btn_del = QtWidgets.QPushButton("➖ حذف انتخاب‌شده")
-        btn_del.clicked.connect(self._safe_del)
+        self.safe_add_btn = QtWidgets.QPushButton()
+        self.safe_add_btn.clicked.connect(self._safe_add)
+        self.safe_del_btn = QtWidgets.QPushButton()
+        self.safe_del_btn.clicked.connect(self._safe_del)
         row.addWidget(self.safe_input)
-        row.addWidget(btn_add)
-        row.addWidget(btn_del)
+        row.addWidget(self.safe_add_btn)
+        row.addWidget(self.safe_del_btn)
         lay.addLayout(row)
-        self.tabs.addTab(w, "لیست امن")
+        self.tabs.addTab(w, "")
 
     def _reload_safe_list(self):
         self.safe_list.clear()
@@ -335,42 +418,49 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             save_safelist(self.safelist)
             self._reload_safe_list()
             self.safe_input.clear()
-            self.log(f"➕ {n} به لیست امن اضافه شد")
+            self.log(tr("log_safe_added").format(n=n))
 
     def _safe_del(self):
         for it in self.safe_list.selectedItems():
             self.safelist.discard(it.text())
         save_safelist(self.safelist)
         self._reload_safe_list()
-        self.log("➖ از لیست امن حذف شد")
+        self.log(tr("log_safe_removed"))
 
     # ---------- تب تنظیمات ----------
     def _build_settings_tab(self):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QFormLayout(w)
+        self.lbl_lang = QtWidgets.QLabel()
+        self.lang_combo2 = QtWidgets.QComboBox()
+        self.lang_combo2.addItems([LANG_NAMES["fa"], LANG_NAMES["en"]])
+        self.lang_combo2.setCurrentText(LANG_NAMES[get_language()])
+        self.lang_combo2.currentTextChanged.connect(self._on_lang_changed)
+        lay.addRow(self.lbl_lang, self.lang_combo2)
+        self.lbl_server = QtWidgets.QLabel()
         self.server_edit = QtWidgets.QLineEdit(", ".join(self.cfg["servers"]))
-        self.server_edit.setPlaceholderText("آی‌پی سرور استریم (MasterStream)")
-        lay.addRow("سرور پینگ:", self.server_edit)
+        lay.addRow(self.lbl_server, self.server_edit)
+        self.lbl_bitrate = QtWidgets.QLabel()
         self.bitrate_spin = QtWidgets.QDoubleSpinBox()
         self.bitrate_spin.setRange(1, 50)
         self.bitrate_spin.setSingleStep(0.5)
         self.bitrate_spin.setValue(float(self.cfg.get("bitrate_mbps", 8.0)))
-        lay.addRow("بیت‌ریت استریم (Mbps):", self.bitrate_spin)
-        btn = QtWidgets.QPushButton("💾 ذخیره تنظیمات")
-        btn.clicked.connect(self._save_settings)
-        lay.addRow(btn)
-        note = QtWidgets.QLabel("پینگ به اولین سرور لیست گرفته می‌شود. بیت‌ریت را مطابق تنظیمات MeldStudio بگذار.")
-        note.setObjectName("Sub")
-        note.setWordWrap(True)
-        lay.addRow(note)
-        self.tabs.addTab(w, "تنظیمات")
+        lay.addRow(self.lbl_bitrate, self.bitrate_spin)
+        self.save_btn = QtWidgets.QPushButton()
+        self.save_btn.clicked.connect(self._save_settings)
+        lay.addRow(self.save_btn)
+        self.set_note = QtWidgets.QLabel()
+        self.set_note.setObjectName("Sub")
+        self.set_note.setWordWrap(True)
+        lay.addRow(self.set_note)
+        self.tabs.addTab(w, "")
 
     def _save_settings(self):
         servers = [s.strip() for s in self.server_edit.text().split(",") if s.strip()]
         self.cfg["servers"] = servers or ["8.8.8.8"]
         self.cfg["bitrate_mbps"] = float(self.bitrate_spin.value())
         save_config(self.cfg)
-        self.log("💾 تنظیمات ذخیره شد")
+        self.log(tr("log_settings_saved"))
 
     def _servers(self):
         return self.cfg.get("servers", ["8.8.8.8"])
@@ -383,51 +473,50 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.log_view.setObjectName("Log")
         self.log_view.setReadOnly(True)
         lay.addWidget(self.log_view)
-        self.tabs.addTab(w, "لاگ")
+        self.tabs.addTab(w, "")
 
     def log(self, msg):
         ts = QtCore.QDateTime.currentDateTime().toString("HH:mm:ss")
-        self.log_view.append(f"[{fa(ts)}] {msg}")
+        self.log_view.append(f"[{num(ts)}] {msg}")
 
     # ---------- شبکه ----------
     def _on_net_stats(self, s):
-        self.card_up.set(fa(f'{s["up_mbps"]:.1f}') + " Mbps")
-        self.card_down.set(fa(f'{s["down_mbps"]:.1f}') + " Mbps")
+        self.card_up.set(num(f'{s["up_mbps"]:.1f}') + " Mbps")
+        self.card_down.set(num(f'{s["down_mbps"]:.1f}') + " Mbps")
         if s["ping_ms"] is not None:
-            extra = f' (جیتر {fa(f"{s["jitter_ms"]:.0f}")})' if s["jitter_ms"] is not None else ""
-            self.card_ping.set(fa(f'{s["ping_ms"]:.0f}') + " ms" + extra)
+            jw = "جیتر" if is_rtl() else "jitter"
+            extra = f' ({jw} {num(f"{s["jitter_ms"]:.0f}")})' if s["jitter_ms"] is not None else ""
+            self.card_ping.set(num(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
-            self.card_ping.set("قطع", RED)
-        key, label, desc = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
+            self.card_ping.set(tr("net_down"), RED)
+        key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
         color = {"good": GREEN, "warn": AMBER, "bad": RED, "unknown": MUTED}[key]
-        self.card_delay.set(label, color)
-        self.card_delay.setToolTip(desc)
+        self.card_delay.set(tr("delay_" + key), color)
+        self.card_delay.setToolTip(tr("delay_" + key + "_tip"))
 
     # ---------- حالت استریم ----------
     def toggle_stream(self):
         if not self.streaming:
-            self.log("🎬 حالت استریم فعال شد؛ بستن برنامه‌های اینترنت‌خور…")
-            killed, skipped = stream_mode_cleanup(self.safelist)
-            for k in killed:
-                self.log("🔥 " + k)
-            for sk in skipped:
-                self.log("⚠ " + sk)
-            if not killed:
-                self.log("برنامه‌ی اضافی برای بستن پیدا نشد ✅")
+            self.log(tr("log_stream_on"))
+            results = stream_mode_cleanup(self.safelist)
+            if not results:
+                self.log(tr("log_nothing"))
+            for ok, name, msg_key in results:
+                if msg_key == "kill_ok":
+                    text = tr(msg_key).format(name=name)
+                elif msg_key == "kill_err":
+                    text = tr(msg_key).format(e=name)
+                else:
+                    text = f"{name}: {tr(msg_key)}"
+                self.log(("🔥 " if ok else "⚠ ") + text)
             self.streaming = True
-            self.btn_stream.setText("⏹ توقف حالت استریم")
-            self.btn_stream.setObjectName("Stop")
-            self.btn_stream.setStyleSheet("")
-            self.pill.setText("🔴 استریم فعال")
-            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
+            self._paint_stream_btn()
+            self._paint_pill()
         else:
             self.streaming = False
-            self.btn_stream.setText("🎬 شروع حالت استریم")
-            self.btn_stream.setObjectName("Go")
-            self.btn_stream.setStyleSheet("")
-            self.pill.setText("آماده")
-            self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
-            self.log("⏹ حالت استریم متوقف شد")
+            self._paint_stream_btn()
+            self._paint_pill()
+            self.log(tr("log_stream_off"))
 
     def closeEvent(self, event):
         self.proc_timer.stop()
@@ -438,7 +527,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    app.setLayoutDirection(QtCore.Qt.LayoutDirection.RightToLeft)
+    app.setLayoutDirection(QtCore.Qt.LayoutDirection.RightToLeft if is_rtl()
+                           else QtCore.Qt.LayoutDirection.LeftToRight)
     app.setStyleSheet(QSS)
     win = LagSliceWindow()
     win.show()

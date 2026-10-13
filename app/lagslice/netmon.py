@@ -93,11 +93,12 @@ def delay_health(up_mbps, bitrate_mbps):
 
     صادقانه: تأخیر واقعی ویور را نمی‌شود از روی PC اندازه گرفت؛
     این تابع «ریسک» بالا رفتن تأخیر از ۲۰ ثانیه را برآورد می‌کند.
+    برمی‌گرداند کلید وضعیت؛ متن نمایشی با tr("delay_"+key) در لایه‌ی UI.
     """
     if up_mbps <= 0.05:
-        return ("unknown", "نامشخص", "در حال اندازه‌گیری…")
+        return "unknown"
     if up_mbps >= bitrate_mbps * 1.5:
-        return ("good", "پایدار", "آپلود کافی است؛ تأخیر ویور در محدوده امن")
+        return "good"
     if up_mbps >= bitrate_mbps:
-        return ("warn", "لب مرز", "آپلود نزدیک به بیت‌ریت است؛ ریسک افزایش تأخیر")
-    return ("bad", "بحرانی", "آپلود کمتر از بیت‌ریت؛ خطر تأخیر بالای ۲۰ ثانیه")
+        return "warn"
+    return "bad"

@@ -42,33 +42,34 @@ NEVER_TOUCH = {
 }
 
 # الگوهای برنامه‌های معمولاً اینترنت‌خور و غیرضروری حین استریم
+# مقدار هر الگو یک کلید i18n است (hog.*) — متن نمایشی از tr() می‌آید
 HOG_PATTERNS = {
-    "chrome.exe": "مرورگر کروم",
-    "firefox.exe": "مرورگر فایرفاکس",
-    "msedge.exe": "مرورگر اج",
-    "opera.exe": "مرورگر اپرا",
-    "brave.exe": "مرورگر بریو",
-    "vivaldi.exe": "مرورگر ویوالدی",
-    "utorrent.exe": "تورنت",
-    "qbittorrent.exe": "تورنت",
-    "bittorrent.exe": "تورنت",
-    "onedrive.exe": "سینک وان‌درایو",
-    "dropbox.exe": "سینک دراپ‌باکس",
-    "googledrivesync.exe": "سینک گوگل درایو",
-    "googledrivefs.exe": "سینک گوگل درایو",
-    "epicgameslauncher.exe": "لانچر اپیک",
-    "ubisoftconnect.exe": "لانچر یوبی‌سافت",
-    "eadesktop.exe": "لانچر EA",
-    "battle.net.exe": "لانچر بتل‌نت",
-    "riotclientservices.exe": "کلاینت رایوت",
-    "spotify.exe": "اسپاتیفای",
-    "telegram.exe": "تلگرام دسکتاپ",
-    "whatsapp.exe": "واتس‌اپ دسکتاپ",
-    "discord.exe": "دیسکورد",
-    "skype.exe": "اسکایپ",
-    "zoom.exe": "زوم",
-    "teams.exe": "تیمز",
-    "slack.exe": "اسلک",
+    "chrome.exe": "hog.chrome",
+    "firefox.exe": "hog.firefox",
+    "msedge.exe": "hog.msedge",
+    "opera.exe": "hog.opera",
+    "brave.exe": "hog.brave",
+    "vivaldi.exe": "hog.vivaldi",
+    "utorrent.exe": "hog.utorrent",
+    "qbittorrent.exe": "hog.qbittorrent",
+    "bittorrent.exe": "hog.bittorrent",
+    "onedrive.exe": "hog.onedrive",
+    "dropbox.exe": "hog.dropbox",
+    "googledrivesync.exe": "hog.googledrivesync",
+    "googledrivefs.exe": "hog.googledrivefs",
+    "epicgameslauncher.exe": "hog.epicgameslauncher",
+    "ubisoftconnect.exe": "hog.ubisoftconnect",
+    "eadesktop.exe": "hog.eadesktop",
+    "battle.net.exe": "hog.battlenet",
+    "riotclientservices.exe": "hog.riotclientservices",
+    "spotify.exe": "hog.spotify",
+    "telegram.exe": "hog.telegram",
+    "whatsapp.exe": "hog.whatsapp",
+    "discord.exe": "hog.discord",
+    "skype.exe": "hog.skype",
+    "zoom.exe": "hog.zoom",
+    "teams.exe": "hog.teams",
+    "slack.exe": "hog.slack",
 }
 
 DEFAULT_SAFELIST = [
@@ -151,35 +152,41 @@ def iter_processes(safelist):
 
 
 def kill_process(pid):
-    """بستن امن یک پروسس؛ اول terminate، بعد kill."""
+    """بستن امن یک پروسس؛ اول terminate، بعد kill.
+
+    برمی‌گرداند (ok, msg_key, name) — متن نمایشی با tr(msg_key) در لایه‌ی UI.
+    """
     try:
         p = psutil.Process(pid)
         name = p.name()
         if classify(name) == "never":
-            return False, "پروسس سیستمی است؛ بسته نشد"
+            return False, "kill_sys", name
         p.terminate()
         try:
             p.wait(timeout=3)
         except psutil.TimeoutExpired:
             p.kill()
-        return True, f"{name} بسته شد"
+        return True, "kill_ok", name
     except psutil.NoSuchProcess:
-        return False, "پروسس از قبل بسته شده بود"
+        return False, "kill_gone", ""
     except psutil.AccessDenied:
-        return False, "دسترسی کافی نیست؛ با ادمین اجرا کن"
+        return False, "kill_denied", ""
     except Exception as e:
-        return False, f"خطا: {e}"
+        return False, "kill_err", str(e)
 
 
 def stream_mode_cleanup(safelist):
-    """بستن همه‌ی کاندیداهای اینترنت‌خور که در لیست امن نیستند."""
-    killed, skipped = [], []
+    """بستن همه‌ی کاندیداهای اینترنت‌خور که در لیست امن نیستند.
+
+    برمی‌گرداند لیستی از (ok, name, msg_key) — متن نمایشی با tr در لایه‌ی UI.
+    """
+    out = []
     for proc in iter_processes(safelist):
         if proc["kind"] != "hog":
             continue
-        ok, msg = kill_process(proc["pid"])
-        (killed if ok else skipped).append(f'{proc["name"]}: {msg}')
-    return killed, skipped
+        ok, msg_key, name = kill_process(proc["pid"])
+        out.append((ok, name or proc["name"], msg_key))
+    return out
 
 
 def is_admin():
