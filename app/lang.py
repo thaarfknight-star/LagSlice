@@ -114,6 +114,30 @@ STRINGS = {
     "safe_pick_cancel": {"fa": "انصراف", "en": "Cancel"},
     "safe_pick_empty": {"fa": "برنامه‌ای پیدا نشد.", "en": "No apps found."},
     "log_safe_pick": {"fa": "به لیست امن اضافه شد", "en": "added to safe list"},
+    "stream_confirm_title": {"fa": "تأیید حالت استریم", "en": "Confirm stream mode"},
+    "stream_confirm_msg": {
+        "fa": "این {n} برنامه‌ی اینترنت‌خور بسته می‌شوند:\n{names}\n\nمطمئنی؟ برنامه‌های لیست امن بسته نمی‌شوند.",
+        "en": "These {n} bandwidth-hogging apps will be closed:\n{names}\n\nSure? Safe-listed apps will not be closed.",
+    },
+    "stream_confirm_yes": {"fa": "ببند و شروع کن", "en": "Close & start"},
+    "stream_confirm_no": {"fa": "انصراف", "en": "Cancel"},
+    "log_stream_cancel": {"fa": "حالت استریم لغو شد", "en": "Stream mode cancelled"},
+    "empty_procs": {
+        "fa": "برنامه‌ی اضافی برای بستن نیست؛ همه‌چیز تمیز است ✅",
+        "en": "No extra apps to close; all clean ✅",
+    },
+    "tip_up": {
+        "fa": "سرعت آپلود لحظه‌ای کل سیستم. برای استریم پایدار باید از بیت‌ریت بیشتر باشد.",
+        "en": "Total system upload speed right now. For stable streaming it should exceed your bitrate.",
+    },
+    "tip_down": {
+        "fa": "سرعت دانلود لحظه‌ای کل سیستم.",
+        "en": "Total system download speed right now.",
+    },
+    "tip_stream": {
+        "fa": "همه‌ی برنامه‌های اینترنت‌خور (غیر از لیست امن) را یک‌جا می‌بندد.",
+        "en": "Closes all bandwidth-hogging apps at once (except the safe list).",
+    },
     # ---- پیام‌های بستن پروسس ----
     "kill_ok": {"fa": "بسته شد", "en": "closed"},
     "kill_gone": {"fa": "پروسس از قبل بسته شده بود", "en": "Process was already closed"},

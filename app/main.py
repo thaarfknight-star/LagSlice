@@ -396,6 +396,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
             c.retranslate()
         self.card_ping.setToolTip(tr("ping_server_hint"))
+        self.card_up.setToolTip(tr("tip_up"))
+        self.card_down.setToolTip(tr("tip_down"))
+        self.btn_stream.setToolTip(tr("tip_stream"))
         self.proc_hint.setAlignment(align)
         self.safe_hint.setAlignment(align)
         self.set_note.setAlignment(align)
@@ -438,6 +441,16 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         else:
             self.pill.setText(tr("status_ready"))
             self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
+        # انیمیشن نرم تغییر وضعیت
+        eff = QtWidgets.QGraphicsOpacityEffect(self.pill)
+        self.pill.setGraphicsEffect(eff)
+        anim = QtCore.QPropertyAnimation(eff, b"opacity", self)
+        anim.setDuration(350)
+        anim.setStartValue(0.25)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
+        anim.start()
+        self._pill_anim = anim
 
     def _refresh_stream_btn(self):
         if self.streaming:
@@ -499,8 +512,19 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_table.setCellWidget(r, 4, btn)
         btn.setVisible(True)
 
+    def _show_table_empty(self):
+        """حالت خالیِ گویا: به‌جای جدول خالی، یک سطر پیام."""
+        t = self.proc_table
+        t.setRowCount(1)
+        msg = self._tcell(tr("empty_procs"))
+        msg.setFlags(msg.flags() & ~QtCore.Qt.ItemFlag.ItemIsSelectable
+                     & ~QtCore.Qt.ItemFlag.ItemIsEnabled)
+        t.setItem(0, 0, msg)
+        t.setSpan(0, 0, 1, t.columnCount())
+
     def refresh_procs(self):
         # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
+        self.proc_table.clearSpans()
         for r in range(self.proc_table.rowCount()):
             w = self.proc_table.cellWidget(r, 4)
             if w is not None and w in self._kill_btn_pool:
@@ -529,6 +553,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             rows.sort(key=lambda x: x["up"], reverse=True)
             self.proc_table.setHorizontalHeaderLabels(
                 [tr("col_app"), tr("col_up"), tr("col_down"), tr("col_pid"), ""])
+            if not rows:
+                self._show_table_empty()
+                return
             self.proc_table.setRowCount(len(rows))
             for r, p in enumerate(rows):
                 label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
@@ -546,6 +573,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
         self.proc_table.setHorizontalHeaderLabels(
             [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
+        if not procs:
+            self._show_table_empty()
+            return
         self.proc_table.setRowCount(len(procs))
         for r, p in enumerate(procs):
             label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
@@ -704,6 +734,27 @@ class LagSliceWindow(QtWidgets.QMainWindow):
     # ---------- حالت استریم ----------
     def toggle_stream(self):
         if not self.streaming:
+            # تأیید قبل از کار خطرناک: بستن دسته‌جمعی برنامه‌ها
+            victims = [p for p in iter_processes(self.safelist) if p["kind"] == "hog"]
+            if victims:
+                names = ", ".join(p["name"] for p in victims[:8])
+                if len(victims) > 8:
+                    names += f" (+{fa_digits(len(victims) - 8)})"
+                box = QtWidgets.QMessageBox(self)
+                box.setWindowTitle(tr("stream_confirm_title"))
+                box.setText(tr("stream_confirm_msg").format(
+                    n=fa_digits(len(victims)), names=names))
+                box.setStandardButtons(
+                    QtWidgets.QMessageBox.StandardButton.Yes
+                    | QtWidgets.QMessageBox.StandardButton.No)
+                box.button(QtWidgets.QMessageBox.StandardButton.Yes).setText(
+                    tr("stream_confirm_yes"))
+                box.button(QtWidgets.QMessageBox.StandardButton.No).setText(
+                    tr("stream_confirm_no"))
+                box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+                if box.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
+                    self.log(tr("log_stream_cancel"))
+                    return
             self.log(tr("log_stream_on"))
             killed, skipped = stream_mode_cleanup(self.safelist)
             for name, key, param in killed:
