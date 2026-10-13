@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Taha Arefi
 """مدیریت پروسس‌ها: شناسایی برنامه‌های اینترنت‌خور، بستن امن با لیست امن.
 
 نکته‌ی صادقانه: روی ویندوز آمار دقیق «مصرف اینترنت هر پروسس» بدون درایور
@@ -8,23 +10,26 @@
 """
 import json
 import os
-import sys
 
 import psutil
 
-from lang import tr
-
-__version__ = "0.1.0"
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def base_dir():
-    """پوشه‌ی قابل نوشتن برنامه: کنار فایل اجرایی (حالت frozen) یا پوشه‌ی app."""
-    if getattr(sys, "frozen", False):
-        return os.path.dirname(os.path.abspath(sys.executable))
-    return os.path.dirname(os.path.abspath(__file__))
+def _data_dir():
+    """مسیر ذخیره‌ی تنظیمات کاربر: روی ویندوز %APPDATA% (در exe موقت گم نمی‌شود)."""
+    try:
+        base = os.environ.get("APPDATA")
+        if base:
+            d = os.path.join(base, "LagSlice")
+            os.makedirs(d, exist_ok=True)
+            return d
+    except Exception:
+        pass
+    return APP_DIR
 
 
-SAFELIST_PATH = os.path.join(base_dir(), "safelist.json")
+SAFELIST_PATH = os.path.join(_data_dir(), "safelist.json")
 
 # پروسس‌هایی که هرگز نباید بسته شوند (سیستمی/حیاتی ویندوز)
 NEVER_TOUCH = {
@@ -37,15 +42,34 @@ NEVER_TOUCH = {
 }
 
 # الگوهای برنامه‌های معمولاً اینترنت‌خور و غیرضروری حین استریم
-# (نام نمایشی دوزبانه از lang.py با کلید hog_<name> خوانده می‌شود)
+# مقدار هر الگو یک کلید i18n است (hog.*) — متن نمایشی از tr() می‌آید
 HOG_PATTERNS = {
-    "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe", "brave.exe",
-    "vivaldi.exe", "utorrent.exe", "qbittorrent.exe", "bittorrent.exe",
-    "onedrive.exe", "dropbox.exe", "googledrivesync.exe", "googledrivefs.exe",
-    "epicgameslauncher.exe", "ubisoftconnect.exe", "eadesktop.exe",
-    "battle.net.exe", "riotclientservices.exe", "spotify.exe", "telegram.exe",
-    "whatsapp.exe", "discord.exe", "skype.exe", "zoom.exe", "teams.exe",
-    "slack.exe",
+    "chrome.exe": "hog.chrome",
+    "firefox.exe": "hog.firefox",
+    "msedge.exe": "hog.msedge",
+    "opera.exe": "hog.opera",
+    "brave.exe": "hog.brave",
+    "vivaldi.exe": "hog.vivaldi",
+    "utorrent.exe": "hog.utorrent",
+    "qbittorrent.exe": "hog.qbittorrent",
+    "bittorrent.exe": "hog.bittorrent",
+    "onedrive.exe": "hog.onedrive",
+    "dropbox.exe": "hog.dropbox",
+    "googledrivesync.exe": "hog.googledrivesync",
+    "googledrivefs.exe": "hog.googledrivefs",
+    "epicgameslauncher.exe": "hog.epicgameslauncher",
+    "ubisoftconnect.exe": "hog.ubisoftconnect",
+    "eadesktop.exe": "hog.eadesktop",
+    "battle.net.exe": "hog.battlenet",
+    "riotclientservices.exe": "hog.riotclientservices",
+    "spotify.exe": "hog.spotify",
+    "telegram.exe": "hog.telegram",
+    "whatsapp.exe": "hog.whatsapp",
+    "discord.exe": "hog.discord",
+    "skype.exe": "hog.skype",
+    "zoom.exe": "hog.zoom",
+    "teams.exe": "hog.teams",
+    "slack.exe": "hog.slack",
 }
 
 DEFAULT_SAFELIST = [
@@ -113,14 +137,13 @@ def iter_processes(safelist):
             else:
                 kind = "other"
             mem = p.info["memory_info"]
-            hog_key = "hog_" + lname
             out.append({
                 "pid": p.info["pid"],
                 "name": name,
                 "cpu": round(p.info["cpu_percent"] or 0.0, 1),
                 "mem_mb": round((mem.rss if mem else 0) / 1024 / 1024, 1),
                 "kind": kind,
-                "fa": tr(hog_key) if kind == "hog" and tr(hog_key) != hog_key else "",
+                "fa": HOG_PATTERNS.get(lname, ""),
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -129,12 +152,15 @@ def iter_processes(safelist):
 
 
 def kill_process(pid):
-    """بستن امن یک پروسس؛ برمی‌گرداند (ok, key, param) و main ترجمه می‌کند."""
+    """بستن امن یک پروسس؛ اول terminate، بعد kill.
+
+    برمی‌گرداند (ok, msg_key, name) — متن نمایشی با tr(msg_key) در لایه‌ی UI.
+    """
     try:
         p = psutil.Process(pid)
         name = p.name()
         if classify(name) == "never":
-            return False, "kill_system", ""
+            return False, "kill_sys", name
         p.terminate()
         try:
             p.wait(timeout=3)
@@ -149,16 +175,24 @@ def kill_process(pid):
         return False, "kill_err", str(e)
 
 
+def hog_candidates(safelist):
+    """کاندیداهای بستن در حالت استریم: لیستی از (pid, name)."""
+    return [(p["pid"], p["name"])
+            for p in iter_processes(safelist) if p["kind"] == "hog"]
+
+
 def stream_mode_cleanup(safelist):
     """بستن همه‌ی کاندیداهای اینترنت‌خور که در لیست امن نیستند.
-    برمی‌گرداند لیستی از (name, key, param)."""
-    killed, skipped = [], []
+
+    برمی‌گرداند لیستی از (ok, name, msg_key) — متن نمایشی با tr در لایه‌ی UI.
+    """
+    out = []
     for proc in iter_processes(safelist):
         if proc["kind"] != "hog":
             continue
-        ok, key, param = kill_process(proc["pid"])
-        (killed if ok else skipped).append((proc["name"], key, param))
-    return killed, skipped
+        ok, msg_key, name = kill_process(proc["pid"])
+        out.append((ok, name or proc["name"], msg_key))
+    return out
 
 
 def is_admin():
