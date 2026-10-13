@@ -465,7 +465,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.card_up.set(fa_digits(f'{s["up_mbps"]:.1f}') + " Mbps")
         self.card_down.set(fa_digits(f'{s["down_mbps"]:.1f}') + " Mbps")
         if s["ping_ms"] is not None:
-            extra = f' ({tr("jitter")} {fa_digits(f"{s["jitter_ms"]:.0f}")})' if s["jitter_ms"] is not None else ""
+            extra = f' ({tr("jitter")} {fa_digits(f'{s["jitter_ms"]:.0f}')})' if s["jitter_ms"] is not None else ""
             self.card_ping.set(fa_digits(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
             self.card_ping.set(tr("disconnected"), RED)
