@@ -30,17 +30,7 @@ def _ping_icmp(host, timeout_ms=1000):
     تا فراخواننده به روش قدیمی (subprocess مخفی) برگردد.
     به ادمین نیاز ندارد.
     """
-    iphlpapi = ctypes.WinDLL("iphlpapi")
-    kernel32 = ctypes.WinDLL("kernel32")
-    iphlpapi.IcmpCreateFile.restype = ctypes.c_void_p
-    iphlpapi.IcmpSendEcho.argtypes = [
-        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ushort,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
-    ]
-    iphlpapi.IcmpSendEcho.restype = ctypes.c_ulong
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-
-    handle = iphlpapi.IcmpCreateFile()
+    iphlpapi, kernel32, handle = _icmp_handles()
     if not handle:
         return None
     try:
@@ -56,6 +46,117 @@ def _ping_icmp(host, timeout_ms=1000):
         return float(rtt)
     finally:
         kernel32.CloseHandle(handle)
+
+
+# ============ موتور پروب سرور (پورت StreamScanner) ============
+# توابع خالص، بدون وابستگی به Qt.
+# قرارداد ورودی probe_server: دیکشنری {id, name, region, host, port}
+
+DEFAULT_RTMP_PORT = 1935
+DOWN_SCORE = 1_000_000.0
+
+
+def _icmp_handles():
+    """هندل ICMP + تنظیم argtypes؛ فقط روی win32 صدا زده می‌شود."""
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    kernel32 = ctypes.WinDLL("kernel32")
+    iphlpapi.IcmpCreateFile.restype = ctypes.c_void_p
+    iphlpapi.IcmpSendEcho.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ushort,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+    ]
+    iphlpapi.IcmpSendEcho.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    return iphlpapi, kernel32, iphlpapi.IcmpCreateFile()
+
+
+def ping_host(host, count=4, timeout_ms=1000):
+    """(avg_ms|None, loss_pct) — چند اکوی IcmpSendEcho، بدون هیچ پروسه‌ای.
+
+    منطق StreamScanner: میانگین اکوهای موفق، loss درصدی.
+    به ادمین نیاز ندارد. روی غیر ویندوز (None, 100).
+    """
+    if not host:
+        return None, 100.0
+    count = max(1, int(count or 1))
+    timeout_ms = max(1, int(timeout_ms or 1000))
+    if sys.platform != "win32":
+        return None, 100.0
+    try:
+        dest = int(ipaddress.IPv4Address(socket.gethostbyname(host)))
+    except Exception:
+        return None, 100.0
+    try:
+        iphlpapi, kernel32, handle = _icmp_handles()
+    except Exception:
+        return None, 100.0
+    if not handle:
+        return None, 100.0
+    rtts = []
+    try:
+        req = b"LagSlicePing" * 2
+        reply = ctypes.create_string_buffer(1024)
+        for _ in range(count):
+            n = iphlpapi.IcmpSendEcho(handle, dest, req, len(req), None,
+                                      reply, len(reply), timeout_ms)
+            if n:
+                rtts.append(float(int.from_bytes(bytes(reply[8:12]), "little")))
+    except Exception:
+        pass
+    finally:
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+    if not rtts:
+        return None, 100.0
+    return sum(rtts) / len(rtts), (count - len(rtts)) / count * 100.0
+
+
+def tcp_probe(host, port, timeout=3.0):
+    """tcp_ms|None — زمان اتصال TCP به پورت؛ عین StreamScanner (سوکت، بدون پروسه)."""
+    if not host:
+        return None
+    try:
+        t0 = time.perf_counter()
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            pass
+        return (time.perf_counter() - t0) * 1000.0
+    except Exception:
+        return None
+
+
+def probe_server(server):
+    """پروب کامل یک سرور؛ دیکشنری با کلیدهای
+    id/name/region/host/port/ping_ms/loss/tcp_ms/ok/score.
+
+    امتیازدهی عین StreamScanner: موفق = tcp + ping*0.3 + loss*20،
+    ناموفق (TCP قطع) = 1_000_000.
+    """
+    s = dict(server or {})
+    host = s.get("host", "")
+    port = s.get("port") or DEFAULT_RTMP_PORT
+    tcp_ms = tcp_probe(host, port)
+    ok = tcp_ms is not None
+    ping_ms, loss = ping_host(host)
+    if not ok:
+        score = DOWN_SCORE
+    else:
+        score = tcp_ms
+        if ping_ms is not None:
+            score += ping_ms * 0.3 + loss * 20.0
+    return {
+        "id": s.get("id"), "name": s.get("name"), "region": s.get("region"),
+        "host": host, "port": port,
+        "ping_ms": ping_ms, "loss": loss, "tcp_ms": tcp_ms,
+        "ok": ok, "score": score,
+    }
+
+
+def server_rtmp_url(s):
+    """rtmp://host:port/live — پورت پیش‌فرض 1935."""
+    s = dict(s or {})
+    return f"rtmp://{s.get('host', '')}:{s.get('port') or DEFAULT_RTMP_PORT}/live"
 
 
 class NetMonitor(QtCore.QThread):
