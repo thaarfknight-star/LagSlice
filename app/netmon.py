@@ -12,12 +12,50 @@ import subprocess
 import platform
 import sys
 import time
+import ctypes
+import socket
+import ipaddress
 from collections import deque
 
 import psutil
 from PyQt6 import QtCore
 
 from estats import ProcNetMonitor
+
+
+def _ping_icmp(host, timeout_ms=1000):
+    """پینگ بدون اسپاون هیچ پروسه‌ای، با IcmpSendEcho ویندوز (ctypes).
+
+    فقط روی win32 صدا زده می‌شود. در صورت هر خطا None برمی‌گرداند
+    تا فراخواننده به روش قدیمی (subprocess مخفی) برگردد.
+    به ادمین نیاز ندارد.
+    """
+    iphlpapi = ctypes.WinDLL("iphlpapi")
+    kernel32 = ctypes.WinDLL("kernel32")
+    iphlpapi.IcmpCreateFile.restype = ctypes.c_void_p
+    iphlpapi.IcmpSendEcho.argtypes = [
+        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ushort,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
+    ]
+    iphlpapi.IcmpSendEcho.restype = ctypes.c_ulong
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+
+    handle = iphlpapi.IcmpCreateFile()
+    if not handle:
+        return None
+    try:
+        dest = int(ipaddress.IPv4Address(socket.gethostbyname(host)))
+        req = b"LagSlicePing" * 2  # 24 بایت داده‌ی درخواست
+        reply = ctypes.create_string_buffer(1024)
+        n = iphlpapi.IcmpSendEcho(handle, dest, req, len(req), None,
+                                  reply, len(reply), timeout_ms)
+        if not n:
+            return None
+        # struct ICMP_ECHO_REPLY: فیلد RoundTripTime در آفست ۸ است
+        rtt = int.from_bytes(bytes(reply[8:12]), "little")
+        return float(rtt)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class NetMonitor(QtCore.QThread):
@@ -87,6 +125,14 @@ class NetMonitor(QtCore.QThread):
     @staticmethod
     def _ping(host):
         """یک پینگ؛ برمی‌گرداند میلی‌ثانیه یا None."""
+        # ویندوز: اول بدون هیچ پروسه‌ای (IcmpSendEcho)؛ اگر نشد، subprocess مخفی
+        if sys.platform == "win32":
+            try:
+                r = _ping_icmp(host)
+                if r is not None:
+                    return r
+            except Exception:
+                pass
         try:
             if platform.system() == "Windows":
                 cmd = ["ping", "-n", "1", "-w", "1000", host]
