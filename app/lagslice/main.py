@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Taha Arefi
 """رابط اصلی LagSlice — فارسی، راست‌چین، تم تیره نئونی (بر اساس لوگو)."""
 import json
 import os
@@ -129,6 +131,54 @@ class StatCard(QtWidgets.QFrame):
             self.val_lbl.setStyleSheet(f"color: {color};")
 
 
+ABOUT_FALLBACK = """«LagSlice» — بهینه‌ساز استریم
+Copyright (C) 2026 Taha Arefi (طه عارفی)
+
+این برنامه نرم‌افزار آزاد است: شما می‌توانید آن را تحت شرایط
+«GNU Affero General Public License» نسخه‌ی ۳ (یا هر نسخه‌ی جدیدتر،
+به انتخاب شما) بازتوزیع و/یا اصلاح کنید.
+متن کامل لایسنس: فایل LICENSE در ریپوی گیت‌هاب + https://www.gnu.org/licenses/agpl-3.0.html
+سورس‌کد: https://github.com/thaarfknight-star/LagSlice"""
+
+
+def _about_text():
+    """متن دیالوگ «درباره» — از docs/about-dialog-fa.txt (باندل‌شده در exe)."""
+    cands = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cands.append(os.path.join(meipass, "docs", "about-dialog-fa.txt"))
+    cands.append(os.path.join(APP_DIR, "..", "docs", "about-dialog-fa.txt"))
+    for c in cands:
+        try:
+            with open(c, "r", encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            continue
+    return ABOUT_FALLBACK
+
+
+class AboutDialog(QtWidgets.QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("درباره‌ی LagSlice")
+        self.resize(480, 420)
+        layout = QtWidgets.QVBoxLayout(self)
+        if LOGO_PATH:
+            logo = QtWidgets.QLabel()
+            pm = QtGui.QPixmap(LOGO_PATH).scaledToHeight(
+                72, QtCore.Qt.TransformationMode.SmoothTransformation)
+            logo.setPixmap(pm)
+            logo.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(logo)
+        txt = QtWidgets.QTextEdit()
+        txt.setReadOnly(True)
+        txt.setPlainText(_about_text())
+        layout.addWidget(txt)
+        btn = QtWidgets.QPushButton("باشه")
+        btn.clicked.connect(self.accept)
+        layout.addWidget(btn)
+
+
 class LagSliceWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -163,6 +213,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.pill.setObjectName("Pill")
         self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
         head.addWidget(self.pill)
+        about_btn = QtWidgets.QPushButton("ℹ درباره")
+        about_btn.clicked.connect(lambda: AboutDialog(self).exec())
+        head.addWidget(about_btn)
         root.addLayout(head)
 
         if not is_admin():

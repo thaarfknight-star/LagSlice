@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Taha Arefi
 """نقطه‌ی ورود LagSlice (برای PyInstaller و اجرای مستقیم)."""
 import os
 import sys
