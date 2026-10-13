@@ -7,9 +7,6 @@
 روی ویندوز اجرا می‌شود؛ برای تست منطق روی لینوکس هم کار می‌کند
 (پینگ با دستور بومی هر سیستم‌عامل).
 """
-import re
-import subprocess
-import platform
 import sys
 import time
 import ctypes
@@ -21,31 +18,6 @@ import psutil
 from PyQt6 import QtCore
 
 from estats import ProcNetMonitor
-
-
-def _ping_icmp(host, timeout_ms=1000):
-    """پینگ بدون اسپاون هیچ پروسه‌ای، با IcmpSendEcho ویندوز (ctypes).
-
-    فقط روی win32 صدا زده می‌شود. در صورت هر خطا None برمی‌گرداند
-    تا فراخواننده به روش قدیمی (subprocess مخفی) برگردد.
-    به ادمین نیاز ندارد.
-    """
-    iphlpapi, kernel32, handle = _icmp_handles()
-    if not handle:
-        return None
-    try:
-        dest = int(ipaddress.IPv4Address(socket.gethostbyname(host)))
-        req = b"LagSlicePing" * 2  # 24 بایت داده‌ی درخواست
-        reply = ctypes.create_string_buffer(1024)
-        n = iphlpapi.IcmpSendEcho(handle, dest, req, len(req), None,
-                                  reply, len(reply), timeout_ms)
-        if not n:
-            return None
-        # struct ICMP_ECHO_REPLY: فیلد RoundTripTime در آفست ۸ است
-        rtt = int.from_bytes(bytes(reply[8:12]), "little")
-        return float(rtt)
-    finally:
-        kernel32.CloseHandle(handle)
 
 
 # ============ موتور پروب سرور (پورت StreamScanner) ============
@@ -225,39 +197,12 @@ class NetMonitor(QtCore.QThread):
 
     @staticmethod
     def _ping(host):
-        """یک پینگ؛ برمی‌گرداند میلی‌ثانیه یا None."""
-        # ویندوز: اول بدون هیچ پروسه‌ای (IcmpSendEcho)؛ اگر نشد، subprocess مخفی
-        if sys.platform == "win32":
-            try:
-                r = _ping_icmp(host)
-                if r is not None:
-                    return r
-            except Exception:
-                pass
+        """یک پینگ؛ برمی‌گرداند میلی‌ثانیه یا None. از موتور مشترک ping_host."""
         try:
-            if platform.system() == "Windows":
-                cmd = ["ping", "-n", "1", "-w", "1000", host]
-            else:
-                cmd = ["ping", "-c", "1", "-W", "1", host]
-            # ویندوز: مخفی‌سازی پنجره‌ی cmd (وگرنه هر ثانیه یک پنجره باز/بسته می‌شود)
-            kwargs = {}
-            if sys.platform == "win32":
-                si = subprocess.STARTUPINFO()
-                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                kwargs = dict(startupinfo=si,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=5, **kwargs)
-            m = re.search(r"time[=<](\d+(?:\.\d+)?)\s*ms", out.stdout)
-            if m:
-                return float(m.group(1))
-            # خروجی فارسی/بومی ویندوز گاهی «زمان=…» است
-            m = re.search(r"(\d+(?:\.\d+)?)\s*(?:ms|میلی)", out.stdout)
-            if m:
-                return float(m.group(1))
+            avg, _loss = ping_host(host, count=1, timeout_ms=1000)
+            return avg
         except Exception:
-            pass
-        return None
+            return None
 
 
 def delay_health(up_mbps, bitrate_mbps):
