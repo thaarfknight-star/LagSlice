@@ -460,8 +460,26 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.proc_table.verticalHeader().setVisible(False)
         self._kill_btn_pool = []
+        # ستون نام برنامه کش می‌آید تا جدول تمام‌عرض شود (راست‌چین)
+        hh = self.proc_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 5):
+            hh.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         lay.addWidget(self.proc_table)
         self.tabs.addTab(w, "")
+
+    def _tcell(self, text, numeric=False):
+        """سلول جدول: متنی با جهت زبان، عددی همیشه چپ‌چین/LTR."""
+        it = QtWidgets.QTableWidgetItem(text)
+        fa = get_lang() == "fa"
+        if numeric:
+            it.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignLeft
+                                | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        else:
+            it.setTextAlignment(
+                (QtCore.Qt.AlignmentFlag.AlignRight if fa else QtCore.Qt.AlignmentFlag.AlignLeft)
+                | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        return it
 
     def _set_kill_button(self, r, pid):
         """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
@@ -515,15 +533,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
                 if p["kind"] == "hog":
                     label = "🔥 " + label
-                self.proc_table.setItem(r, 0, QtWidgets.QTableWidgetItem(label))
+                self.proc_table.setItem(r, 0, self._tcell(label))
                 self.proc_table.setItem(
-                    r, 1, QtWidgets.QTableWidgetItem(fa_digits(_fmt_rate(p["up"]))))
+                    r, 1, self._tcell(fa_digits(_fmt_rate(p["up"])), numeric=True))
                 self.proc_table.setItem(
-                    r, 2, QtWidgets.QTableWidgetItem(fa_digits(_fmt_rate(p["down"]))))
+                    r, 2, self._tcell(fa_digits(_fmt_rate(p["down"])), numeric=True))
                 self.proc_table.setItem(
-                    r, 3, QtWidgets.QTableWidgetItem(fa_digits(p["pid"])))
+                    r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
                 self._set_kill_button(r, p["pid"])
-            self.proc_table.resizeColumnsToContents()
             return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
         self.proc_table.setHorizontalHeaderLabels(
@@ -533,10 +550,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             label = p["name"] + (f" ({p['fa']})" if p["fa"] else "")
             if p["kind"] == "hog":
                 label = "🔥 " + label
-            self.proc_table.setItem(r, 0, QtWidgets.QTableWidgetItem(label))
-            self.proc_table.setItem(r, 1, QtWidgets.QTableWidgetItem(fa_digits(p["pid"])))
-            self.proc_table.setItem(r, 2, QtWidgets.QTableWidgetItem(fa_digits(p["cpu"])))
-            self.proc_table.setItem(r, 3, QtWidgets.QTableWidgetItem(fa_digits(p["mem_mb"])))
+            self.proc_table.setItem(r, 0, self._tcell(label))
+            self.proc_table.setItem(r, 1, self._tcell(fa_digits(p["pid"]), numeric=True))
+            self.proc_table.setItem(r, 2, self._tcell(fa_digits(p["cpu"]), numeric=True))
+            self.proc_table.setItem(r, 3, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
             self._set_kill_button(r, p["pid"])
         self.proc_table.resizeColumnsToContents()
 
