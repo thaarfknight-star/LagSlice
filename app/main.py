@@ -21,7 +21,15 @@ from procman import (
     load_safelist, save_safelist, is_admin, base_dir,
     NEVER_TOUCH, HOG_PATTERNS,
 )
+from servers import (
+    load_servers, add_server as srv_add, update_server as srv_update,
+    delete_server as srv_delete, import_rtmp_bulk,
+    server_rtmp_url, parse_rtmp, suggest_name, detect_region,
+)
+from scan import ScanThread
 import psutil
+
+REGIONS = ("ir", "de", "fr", "nl", "uk", "tr", "ae", "")
 
 
 def _fmt_rate(bps):
@@ -101,6 +109,11 @@ QLabel#Sub {{ font-size: 12px; color: {MUTED}; }}
 QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
 QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
 QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
+QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
+    border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
+QProgressBar {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
+    text-align: center; color: {MUTED}; }}
+QProgressBar::chunk {{ background-color: {CYAN}; border-radius: 6px; }}
 QFrame#Card {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
 QPushButton {{ background-color: #16202F; border: 1px solid {CYAN}; border-radius: 10px; color: {TEXT}; font-weight: bold; }}
 QPushButton:hover {{ background-color: #1B2940; }}
@@ -213,6 +226,62 @@ class AboutDialog(QtWidgets.QDialog):
         lay.addWidget(btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
 
+class ServerEditDialog(QtWidgets.QDialog):
+    """افزودن/ویرایش سرور استریم — نام و منطقه خودکار از روی لینک حدس زده می‌شوند."""
+
+    def __init__(self, parent=None, server=None):
+        super().__init__(parent)
+        s = server or {}
+        self.setWindowTitle(tr("scan_edit_title") if server else tr("scan_add_title"))
+        lay = QtWidgets.QFormLayout(self)
+        self.name_edit = QtWidgets.QLineEdit(s.get("name", ""))
+        self.name_edit.setPlaceholderText("IR1")
+        self.rtmp_edit = QtWidgets.QLineEdit(server_rtmp_url(s) if server else "")
+        self.rtmp_edit.setPlaceholderText("rtmp://host:1935/live")
+        self.rtmp_edit.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.rtmp_edit.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
+        self.rtmp_edit.textChanged.connect(self._auto_fill)
+        self.region_combo = QtWidgets.QComboBox()
+        for r in REGIONS:
+            self.region_combo.addItem(tr("region_" + (r or "unknown")), r)
+        cur = s.get("region", "unknown")
+        idx = self.region_combo.findData(cur)
+        self.region_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        lay.addRow(tr("scan_srv_name"), self.name_edit)
+        lay.addRow(tr("scan_srv_rtmp"), self.rtmp_edit)
+        lay.addRow(tr("scan_srv_region"), self.region_combo)
+        hint = QtWidgets.QLabel(tr("scan_auto_hint"))
+        hint.setObjectName("Sub")
+        hint.setWordWrap(True)
+        lay.addRow(hint)
+        row = QtWidgets.QHBoxLayout()
+        ok_btn = QtWidgets.QPushButton(tr("ok"))
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn = QtWidgets.QPushButton(tr("cancel"))
+        cancel_btn.clicked.connect(self.reject)
+        row.addWidget(ok_btn)
+        row.addWidget(cancel_btn)
+        lay.addRow(row)
+
+    def _auto_fill(self, text):
+        host, _port = parse_rtmp(text)
+        if host and not self.name_edit.text().strip():
+            self.name_edit.setText(suggest_name(host))
+        if host:
+            idx = self.region_combo.findData(detect_region(host))
+            if idx >= 0:
+                self.region_combo.setCurrentIndex(idx)
+
+    def values(self):
+        host, port = parse_rtmp(self.rtmp_edit.text())
+        return {
+            "name": self.name_edit.text().strip(),
+            "host": host,
+            "port": port,
+            "region": self.region_combo.currentData(),
+        }
+
+
 class SafePickDialog(QtWidgets.QDialog):
     """افزودن به لیست امن با انتخاب از برنامه‌های در حال اجرا (جست‌وجو + تیک)."""
 
@@ -276,8 +345,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.cfg = load_config()
         set_lang(self.cfg.get("lang", "fa"))
         self.safelist = load_safelist()
+        self.servers = load_servers()
         self.streaming = False
         self._last_delay_key = "unknown"
+        self._scan_thread = None
+        self._scanning = False
+        self._scan_results = {}
 
         self.setWindowTitle(f"LagSlice ⚡ (v{__version__})")
         self.resize(980, 700)
@@ -345,6 +418,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         root.addWidget(self.tabs, 1)
         self._build_proc_tab()
+        self._build_scan_tab()
         self._build_safe_tab()
         self._build_settings_tab()
         self._build_log_tab()
@@ -406,9 +480,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._refresh_pill()
         self._refresh_stream_btn()
         self.tabs.setTabText(0, tr("tab_procs"))
-        self.tabs.setTabText(1, tr("tab_safe"))
-        self.tabs.setTabText(2, tr("tab_settings"))
-        self.tabs.setTabText(3, tr("tab_log"))
+        self.tabs.setTabText(1, tr("tab_scan"))
+        self.tabs.setTabText(2, tr("tab_safe"))
+        self.tabs.setTabText(3, tr("tab_settings"))
+        self.tabs.setTabText(4, tr("tab_log"))
         self.proc_hint.setText(tr("procs_hint"))
         self.proc_table.setHorizontalHeaderLabels(
             [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
@@ -421,6 +496,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
+        self._retranslate_scan()
         self._update_delay_card()
         self.refresh_procs()
 
@@ -598,6 +674,302 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             msg = tr(key)
         self.log(("✅ " if ok else "❌ ") + msg)
         self.refresh_procs()
+
+    # ---------- تب اسکن سرورها ----------
+    def _build_scan_tab(self):
+        w = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(w)
+        self.scan_hint = QtWidgets.QLabel()
+        self.scan_hint.setObjectName("Sub")
+        self.scan_hint.setWordWrap(True)
+        lay.addWidget(self.scan_hint)
+
+        # بنر بهترین سرور
+        self.scan_best = QtWidgets.QLabel()
+        self.scan_best.setObjectName("BestBanner")
+        self.scan_best.setWordWrap(True)
+        self.scan_best.setVisible(False)
+        lay.addWidget(self.scan_best)
+
+        # پروگرس اسکن
+        prow = QtWidgets.QHBoxLayout()
+        self.scan_bar = QtWidgets.QProgressBar()
+        self.scan_bar.setVisible(False)
+        self.scan_bar.setTextVisible(True)
+        self.scan_lbl = QtWidgets.QLabel()
+        self.scan_lbl.setVisible(False)
+        prow.addWidget(self.scan_bar, 1)
+        prow.addWidget(self.scan_lbl)
+        lay.addLayout(prow)
+
+        # دکمه‌های اسکن
+        srow = QtWidgets.QHBoxLayout()
+        self.btn_scan_all = QtWidgets.QPushButton()
+        self.btn_scan_all.setObjectName("Go")
+        self.btn_scan_all.clicked.connect(self._scan_all)
+        self.btn_scan_one = QtWidgets.QPushButton()
+        self.btn_scan_one.clicked.connect(self._scan_selected)
+        self.btn_scan_stop = QtWidgets.QPushButton()
+        self.btn_scan_stop.setObjectName("Stop")
+        self.btn_scan_stop.clicked.connect(self._scan_stop)
+        self.btn_scan_stop.setEnabled(False)
+        srow.addWidget(self.btn_scan_all)
+        srow.addWidget(self.btn_scan_one)
+        srow.addWidget(self.btn_scan_stop)
+        srow.addStretch(1)
+        lay.addLayout(srow)
+
+        # جدول نتایج
+        self.scan_table = QtWidgets.QTableWidget(0, 6)
+        self.scan_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.scan_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.scan_table.verticalHeader().setVisible(False)
+        shh = self.scan_table.horizontalHeader()
+        shh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for i in range(1, 6):
+            shh.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        self.scan_table.itemDoubleClicked.connect(lambda _i: self._scan_copy_rtmp())
+        lay.addWidget(self.scan_table, 1)
+
+        # دکمه‌های مدیریت سرور
+        mrow = QtWidgets.QHBoxLayout()
+        self.btn_srv_add = QtWidgets.QPushButton()
+        self.btn_srv_add.clicked.connect(self._scan_add)
+        self.btn_srv_edit = QtWidgets.QPushButton()
+        self.btn_srv_edit.clicked.connect(self._scan_edit)
+        self.btn_srv_del = QtWidgets.QPushButton()
+        self.btn_srv_del.setObjectName("Danger")
+        self.btn_srv_del.clicked.connect(self._scan_del)
+        self.btn_srv_import = QtWidgets.QPushButton()
+        self.btn_srv_import.clicked.connect(self._scan_import)
+        self.btn_srv_copy = QtWidgets.QPushButton()
+        self.btn_srv_copy.clicked.connect(self._scan_copy_rtmp)
+        mrow.addWidget(self.btn_srv_add)
+        mrow.addWidget(self.btn_srv_edit)
+        mrow.addWidget(self.btn_srv_del)
+        mrow.addWidget(self.btn_srv_import)
+        mrow.addStretch(1)
+        mrow.addWidget(self.btn_srv_copy)
+        lay.addLayout(mrow)
+
+        self.tabs.addTab(w, "")
+
+    def _retranslate_scan(self):
+        rtl = get_lang() == "fa"
+        align = (QtCore.Qt.AlignmentFlag.AlignRight if rtl
+                 else QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.scan_hint.setText(tr("scan_hint"))
+        self.scan_hint.setAlignment(align)
+        self.scan_best.setAlignment(align)
+        self.btn_scan_all.setText(tr("scan_all"))
+        self.btn_scan_all.setToolTip(tr("scan_hint"))
+        self.btn_scan_one.setText(tr("scan_one"))
+        self.btn_scan_stop.setText(tr("scan_stop"))
+        self.btn_srv_add.setText(tr("scan_add"))
+        self.btn_srv_edit.setText(tr("scan_edit"))
+        self.btn_srv_del.setText(tr("scan_del"))
+        self.btn_srv_import.setText(tr("scan_import"))
+        self.btn_srv_copy.setText(tr("scan_copy"))
+        self.btn_srv_copy.setToolTip(tr("scan_copied"))
+        self.scan_table.setHorizontalHeaderLabels(
+            [tr("scan_col_server"), tr("scan_col_region"), tr("scan_col_ping"),
+             tr("scan_col_loss"), tr("scan_col_tcp"), tr("scan_col_score")])
+        for i in range(6):
+            item = self.scan_table.horizontalHeaderItem(i)
+            if item is not None:
+                item.setTextAlignment(
+                    QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter
+                    if i else (align | QtCore.Qt.AlignmentFlag.AlignVCenter))
+        self._refresh_scan_table()
+
+    def _selected_server(self):
+        rows = self.scan_table.selectionModel().selectedRows()
+        if not rows:
+            return None
+        sid = self.scan_table.item(rows[0].row(), 0)
+        if sid is None:
+            return None
+        sid = sid.data(QtCore.Qt.ItemDataRole.UserRole)
+        for s in self.servers:
+            if s.get("id") == sid:
+                return s
+        return None
+
+    def _refresh_scan_table(self):
+        """جدول سرورها مرتب بر اساس امتیاز (بهترین اول)."""
+        if not self.servers:
+            self.scan_table.setRowCount(0)
+            self.scan_hint.setText(tr("scan_no_servers_hint"))
+            self.scan_best.setVisible(False)
+            return
+        self.scan_hint.setText(tr("scan_hint"))
+        rows = []
+        for s in self.servers:
+            r = self._scan_results.get(s.get("id"))
+            rows.append((r["score"] if r else float("inf"), s, r))
+        rows.sort(key=lambda x: x[0])
+        self.scan_table.setRowCount(len(rows))
+        fa = get_lang() == "fa"
+        for i, (_sc, s, r) in enumerate(rows):
+            it0 = self._tcell(s.get("name", ""))
+            it0.setData(QtCore.Qt.ItemDataRole.UserRole, s.get("id"))
+            self.scan_table.setItem(i, 0, it0)
+            self.scan_table.setItem(
+                i, 1, self._tcell(tr("region_" + (s.get("region") or "unknown"))))
+            if r is None:
+                for c in range(2, 6):
+                    self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
+            elif not r["ok"]:
+                for c in (2, 3, 4):
+                    self.scan_table.setItem(i, c, self._tcell("—", numeric=True))
+                self.scan_table.setItem(i, 5, self._tcell(tr("scan_down")))
+            else:
+                ping = f"{r['ping_ms']:.0f} ms" if r["ping_ms"] is not None else "—"
+                loss = f"{r['loss']:.0f}٪" if fa else f"{r['loss']:.0f}%"
+                tcp = f"{r['tcp_ms']:.0f} ms"
+                self.scan_table.setItem(i, 2, self._tcell(fa_digits(ping), numeric=True))
+                self.scan_table.setItem(i, 3, self._tcell(fa_digits(loss), numeric=True))
+                self.scan_table.setItem(i, 4, self._tcell(fa_digits(tcp), numeric=True))
+                self.scan_table.setItem(i, 5, self._tcell(
+                    fa_digits(f"{r['score']:.0f}"), numeric=True))
+        self._update_best_banner()
+
+    def _update_best_banner(self):
+        best = None
+        for s in self.servers:
+            r = self._scan_results.get(s.get("id"))
+            if r and r["ok"] and (best is None or r["score"] < best[1]["score"]):
+                best = (s, r)
+        if best is None:
+            self.scan_best.setVisible(False)
+            return
+        s, r = best
+        url = server_rtmp_url(s)
+        self.scan_best.setText(f"{tr('scan_best')}: {s.get('name')} — {url}")
+        self.scan_best.setVisible(True)
+
+    # ----- اجرای اسکن -----
+    def _scan_all(self):
+        if self._scanning:
+            return
+        if not self.servers:
+            QtWidgets.QMessageBox.information(
+                self, tr("tab_scan"), tr("scan_no_servers_hint"))
+            return
+        self._start_scan(list(self.servers))
+
+    def _scan_selected(self):
+        if self._scanning:
+            return
+        s = self._selected_server()
+        if s is None:
+            QtWidgets.QMessageBox.information(
+                self, tr("tab_scan"), tr("scan_select_first"))
+            return
+        self._start_scan([s])
+
+    def _start_scan(self, servers):
+        self._scanning = True
+        self.scan_bar.setVisible(True)
+        self.scan_lbl.setVisible(True)
+        self.scan_bar.setRange(0, len(servers))
+        self.scan_bar.setValue(0)
+        self.btn_scan_all.setEnabled(False)
+        self.btn_scan_one.setEnabled(False)
+        self.btn_scan_stop.setEnabled(True)
+        self.scan_lbl.setText(tr("scan_scanning"))
+        self._scan_thread = ScanThread(servers, parent=self)
+        self._scan_thread.progress.connect(self._on_scan_progress)
+        self._scan_thread.result_ready.connect(self._on_scan_result)
+        self._scan_thread.finished_all.connect(self._on_scan_done)
+        self._scan_thread.start()
+
+    def _on_scan_progress(self, done, total):
+        self.scan_bar.setValue(done)
+        self.scan_lbl.setText(f"{tr('scan_scanning')} {fa_digits(done)} {tr('scan_of')} {fa_digits(total)}")
+
+    def _on_scan_result(self, r):
+        if r.get("id"):
+            self._scan_results[r["id"]] = r
+            self._refresh_scan_table()
+
+    def _on_scan_done(self, results):
+        self._scanning = False
+        self.scan_bar.setVisible(False)
+        self.scan_lbl.setVisible(False)
+        self.btn_scan_all.setEnabled(True)
+        self.btn_scan_one.setEnabled(True)
+        self.btn_scan_stop.setEnabled(False)
+        self._scan_thread = None
+        ups = [r for r in results if r.get("ok")]
+        if not ups:
+            self.log("❌ " + tr("scan_none_up"))
+            QtWidgets.QMessageBox.warning(self, tr("tab_scan"), tr("scan_none_up"))
+        else:
+            self._refresh_scan_table()
+            self.log(f"⚡ {len(ups)} {tr('scan_up')}")
+
+    def _scan_stop(self):
+        if self._scan_thread is not None:
+            self._scan_thread.stop()
+
+    # ----- مدیریت سرورها -----
+    def _scan_add(self):
+        dlg = ServerEditDialog(self)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            v = dlg.values()
+            self.servers, s = srv_add(v["name"], v["host"], v["port"], v["region"])
+            self._refresh_scan_table()
+            self.log(f"➕ {s['name']}")
+
+    def _scan_edit(self):
+        s = self._selected_server()
+        if s is None:
+            QtWidgets.QMessageBox.information(
+                self, tr("tab_scan"), tr("scan_select_first"))
+            return
+        dlg = ServerEditDialog(self, s)
+        if dlg.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+            v = dlg.values()
+            self.servers = srv_update(
+                s["id"], name=v["name"], host=v["host"],
+                port=v["port"], region=v["region"])
+            self._refresh_scan_table()
+
+    def _scan_del(self):
+        s = self._selected_server()
+        if s is None:
+            QtWidgets.QMessageBox.information(
+                self, tr("tab_scan"), tr("scan_select_first"))
+            return
+        ans = QtWidgets.QMessageBox.question(
+            self, tr("scan_del"), f"{s.get('name')}\n{tr('scan_del_q')}")
+        if ans == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.servers = srv_delete(s["id"])
+            self._scan_results.pop(s["id"], None)
+            self._refresh_scan_table()
+            self.log(f"➖ {s.get('name')}")
+
+    def _scan_import(self):
+        text, ok = QtWidgets.QInputDialog.getMultiLineText(
+            self, tr("scan_import_title"), tr("scan_import_hint"))
+        if ok and text.strip():
+            n = import_rtmp_bulk(text)
+            self.servers = load_servers()
+            self._refresh_scan_table()
+            self.log(f"📥 {fa_digits(n)} {tr('scan_imported')}" if n
+                     else f"📥 {tr('scan_import_none')}")
+
+    def _scan_copy_rtmp(self):
+        s = self._selected_server()
+        if s is None:
+            QtWidgets.QMessageBox.information(
+                self, tr("tab_scan"), tr("scan_select_first"))
+            return
+        url = server_rtmp_url(s)
+        QtWidgets.QApplication.clipboard().setText(url)
+        self.log(f"📋 {tr('scan_copied')}: {url}")
+        QtWidgets.QMessageBox.information(self, tr("scan_copy"), url)
 
     # ---------- تب لیست امن ----------
     def _build_safe_tab(self):
@@ -781,6 +1153,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         return f"{name}: {tr(key)}"
 
     def closeEvent(self, event):
+        if self._scan_thread is not None:
+            self._scan_thread.stop()
+            self._scan_thread.wait(3000)
         self.proc_timer.stop()
         self.netmon.stop()
         self.netmon.wait(2000)

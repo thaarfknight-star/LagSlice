@@ -22,3 +22,10 @@ Public License v3.0 (see the LICENSE file in the repository root).
    Source: https://github.com/rastikerdar/vazirmatn
    Note: bundled as assets/fonts/Vazirmatn-*.ttf; full OFL text in
    assets/fonts/OFL.txt
+
+4) StreamScanner scan logic (server probing, scoring, region detection)
+   License: used with permission of the copyright holder (same owner)
+   Copyright: Taha Arefi (thaarfknight-star/StreamScanner, now private)
+   Note: app/servers.py and app/scan.py are adapted from StreamScanner's
+   core and relicensed here under AGPL-3.0-only by the owner's order
+   to merge it into LagSlice.

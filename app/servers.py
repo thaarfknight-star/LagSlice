@@ -37,6 +37,15 @@ DEFAULT_SERVERS = [
 ]
 
 
+def server_rtmp_url(s):
+    """آدرس RTMP کامل یک سرور: rtmp://host:port/live"""
+    host = ((s or {}).get("host") or "").strip()
+    if not host:
+        return ""
+    port = (s or {}).get("port") or DEFAULT_RTMP_PORT
+    return f"rtmp://{host}:{port}/live"
+
+
 def _clean(s):
     if isinstance(s, dict):
         return {
@@ -163,3 +172,31 @@ def import_rtmp(text, name="", region=""):
         "host": host,
         "port": port,
     }
+def import_rtmp_bulk(text):
+    """درون‌ریزی گروهی: هر خط یک RTMP URL (قالب اختیاری: نام | rtmp://...).
+    تعداد افزوده‌شده را برمی‌گرداند؛ تکراری‌ها نادیده گرفته می‌شوند."""
+    servers = load_servers()
+    seen = {(s.get("host", "").lower(), int(s.get("port") or 0)) for s in servers}
+    added = 0
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name = ""
+        if "|" in line:
+            name, line = [p.strip() for p in line.split("|", 1)]
+        host, port = parse_rtmp(line)
+        if not host or (host.lower(), port) in seen:
+            continue
+        servers.append({
+            "id": uuid.uuid4().hex[:8],
+            "name": name or suggest_name(host),
+            "region": detect_region(host),
+            "host": host,
+            "port": port,
+        })
+        seen.add((host.lower(), port))
+        added += 1
+    if added:
+        save_servers(servers)
+    return added
