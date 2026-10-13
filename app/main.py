@@ -459,10 +459,34 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.proc_table.verticalHeader().setVisible(False)
+        self._kill_btn_pool = []
         lay.addWidget(self.proc_table)
         self.tabs.addTab(w, "")
 
+    def _set_kill_button(self, r, pid):
+        """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
+        if r < len(self._kill_btn_pool):
+            btn = self._kill_btn_pool[r]
+        else:
+            btn = QtWidgets.QPushButton()
+            btn.setObjectName("Danger")
+            self._kill_btn_pool.append(btn)
+        btn.setText(tr("btn_kill"))
+        try:
+            btn.clicked.disconnect()
+        except (TypeError, RuntimeError):
+            pass
+        btn.clicked.connect(lambda _=False, pid=pid: self._kill_one(pid))
+        self.proc_table.setCellWidget(r, 4, btn)
+        btn.setVisible(True)
+
     def refresh_procs(self):
+        # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
+        for r in range(self.proc_table.rowCount()):
+            w = self.proc_table.cellWidget(r, 4)
+            if w is not None and w in self._kill_btn_pool:
+                self.proc_table.removeCellWidget(r, 4)
+                w.setVisible(False)
         per_proc = (getattr(self, "_last_stats", None) or {}).get("per_proc") or {}
         if per_proc:
             # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
@@ -498,10 +522,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 2, QtWidgets.QTableWidgetItem(fa_digits(_fmt_rate(p["down"]))))
                 self.proc_table.setItem(
                     r, 3, QtWidgets.QTableWidgetItem(fa_digits(p["pid"])))
-                btn = QtWidgets.QPushButton(tr("btn_kill"))
-                btn.setObjectName("Danger")
-                btn.clicked.connect(lambda _=False, pid=p["pid"]: self._kill_one(pid))
-                self.proc_table.setCellWidget(r, 4, btn)
+                self._set_kill_button(r, p["pid"])
             self.proc_table.resizeColumnsToContents()
             return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
@@ -516,10 +537,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.proc_table.setItem(r, 1, QtWidgets.QTableWidgetItem(fa_digits(p["pid"])))
             self.proc_table.setItem(r, 2, QtWidgets.QTableWidgetItem(fa_digits(p["cpu"])))
             self.proc_table.setItem(r, 3, QtWidgets.QTableWidgetItem(fa_digits(p["mem_mb"])))
-            btn = QtWidgets.QPushButton(tr("btn_kill"))
-            btn.setObjectName("Danger")
-            btn.clicked.connect(lambda _=False, pid=p["pid"]: self._kill_one(pid))
-            self.proc_table.setCellWidget(r, 4, btn)
+            self._set_kill_button(r, p["pid"])
         self.proc_table.resizeColumnsToContents()
 
     def _kill_one(self, pid):
