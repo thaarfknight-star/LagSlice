@@ -11,6 +11,7 @@
 import json
 import os
 import sys
+import faulthandler
 import tempfile
 import threading
 import time
@@ -84,6 +85,21 @@ def _install_crash_hook():
 
 
 _install_crash_hook()
+
+_faulthandler_file = None
+
+
+def _enable_faulthandler():
+    """کرش‌های سخت (segfault) هم stack trace در فایل لاگ بگذارند."""
+    global _faulthandler_file
+    try:
+        _faulthandler_file = open(_crash_log_path(), "a", encoding="utf-8")
+        faulthandler.enable(file=_faulthandler_file)
+    except Exception:
+        pass
+
+
+_enable_faulthandler()
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
