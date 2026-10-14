@@ -50,8 +50,8 @@ if WIN32:
         class _TCP_ESTATS_DATA_ROD_v0(ctypes.Structure):
             _fields_ = [
                 ("DataBytesOut", ctypes.c_uint64),
-                ("DataBytesIn", ctypes.c_uint64),
                 ("DataSegsOut", ctypes.c_uint64),
+                ("DataBytesIn", ctypes.c_uint64),
                 ("DataSegsIn", ctypes.c_uint64),
             ]
 
