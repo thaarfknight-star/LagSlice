@@ -9,9 +9,9 @@
 """
 import sys
 import time
-import ctypes
+import re
 import socket
-import ipaddress
+import subprocess
 from collections import deque
 
 import psutil
@@ -28,61 +28,45 @@ DEFAULT_RTMP_PORT = 1935
 DOWN_SCORE = 1_000_000.0
 
 
-def _icmp_handles():
-    """هندل ICMP + تنظیم argtypes؛ فقط روی win32 صدا زده می‌شود."""
-    iphlpapi = ctypes.WinDLL("iphlpapi")
-    kernel32 = ctypes.WinDLL("kernel32")
-    iphlpapi.IcmpCreateFile.restype = ctypes.c_void_p
-    iphlpapi.IcmpSendEcho.argtypes = [
-        ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ushort,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong,
-    ]
-    iphlpapi.IcmpSendEcho.restype = ctypes.c_ulong
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    return iphlpapi, kernel32, iphlpapi.IcmpCreateFile()
-
-
 def ping_host(host, count=4, timeout_ms=1000):
-    """(avg_ms|None, loss_pct) — چند اکوی IcmpSendEcho، بدون هیچ پروسه‌ای.
+    """(avg_ms|None, loss_pct) — پینگ با ping.exe مخفی (بدون پنجره‌ی cmd).
 
-    منطق StreamScanner: میانگین اکوهای موفق، loss درصدی.
-    به ادمین نیاز ندارد. روی غیر ویندوز (None, 100).
+    منطق StreamScanner: میانگین زمان‌های موفق، loss درصدی.
+    روی ویندوز پنجره‌ی cmd مخفی می‌شود (STARTUPINFO + CREATE_NO_WINDOW).
     """
     if not host:
         return None, 100.0
     count = max(1, int(count or 1))
     timeout_ms = max(1, int(timeout_ms or 1000))
-    if sys.platform != "win32":
-        return None, 100.0
+    if sys.platform == "win32":
+        cmd = ["ping", "-n", str(count), "-w", str(timeout_ms), host]
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs = dict(startupinfo=si,
+                      creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        cmd = ["ping", "-c", str(count), "-W",
+               str(max(1, timeout_ms // 1000)), host]
+        kwargs = {}
     try:
-        dest = int(ipaddress.IPv4Address(socket.gethostbyname(host)))
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=count * (timeout_ms / 1000.0) + 10,
+                              **kwargs)
+        out = proc.stdout or ""
+        times = [float(x)
+                 for x in re.findall(r"time[=<](\d+(?:\.\d+)?)\s*ms", out)]
+        if not times:
+            # خروجی فارسی/بومی ویندوز گاهی «زمان=…» است
+            times = [float(x) for x in
+                     re.findall(r"(\d+(?:\.\d+)?)\s*(?:ms|میلی)", out)]
+        loss_m = re.search(r"(\d+)%\s*(?:packet\s*)?loss", out, re.IGNORECASE)
+        if loss_m is None:
+            loss_m = re.search(r"Lost = \d+ \((\d+)% loss\)", out)
+        loss = float(loss_m.group(1)) if loss_m else (0.0 if times else 100.0)
+        avg = sum(times) / len(times) if times else None
+        return avg, loss
     except Exception:
         return None, 100.0
-    try:
-        iphlpapi, kernel32, handle = _icmp_handles()
-    except Exception:
-        return None, 100.0
-    if not handle:
-        return None, 100.0
-    rtts = []
-    try:
-        req = b"LagSlicePing" * 2
-        reply = ctypes.create_string_buffer(1024)
-        for _ in range(count):
-            n = iphlpapi.IcmpSendEcho(handle, dest, req, len(req), None,
-                                      reply, len(reply), timeout_ms)
-            if n:
-                rtts.append(float(int.from_bytes(bytes(reply[8:12]), "little")))
-    except Exception:
-        pass
-    finally:
-        try:
-            kernel32.CloseHandle(handle)
-        except Exception:
-            pass
-    if not rtts:
-        return None, 100.0
-    return sum(rtts) / len(rtts), (count - len(rtts)) / count * 100.0
 
 
 def tcp_probe(host, port, timeout=3.0):
