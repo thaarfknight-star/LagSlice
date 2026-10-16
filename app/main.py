@@ -101,6 +101,15 @@ def _enable_faulthandler():
 
 _enable_faulthandler()
 
+# علامت عیب‌یابی: اگر EStats با متغیر محیطی خاموش شده، در لاگ ثبت شود
+# تا موقع بررسی کرش معلوم باشد برنامه در کدام حالت اجرا شده است.
+if os.environ.get("LAGSLICE_NO_ESTATS", "") == "1":
+    try:
+        with open(_crash_log_path(), "a", encoding="utf-8") as _df:
+            _df.write("LAGSLICE_NO_ESTATS=1: EStats disabled for crash diagnosis\n")
+    except Exception:
+        pass
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from lang import tr, set_lang, get_lang, fa_digits

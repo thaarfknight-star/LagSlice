@@ -13,6 +13,7 @@ All Windows-only code is guarded so the module imports anywhere.
 """
 
 import ctypes
+import os
 import socket
 import sys
 import time
@@ -21,8 +22,12 @@ WIN32 = sys.platform == "win32"
 
 MIB_TCP_STATE_ESTAB = 5
 
+# کلید عیب‌یابی کرش: با LAGSLICE_NO_ESTATS=1 هیچ فراخوانی EStats انجام نمی‌شود.
+_NO_ESTATS = os.environ.get("LAGSLICE_NO_ESTATS", "") == "1"
+
 _iphlpapi = None
 _Row = None
+_TcpRow = None
 _RW = None
 _ROD = None
 _GetExtendedTcpTable = None
@@ -44,6 +49,19 @@ if WIN32:
                 ("dwOwningPid", wintypes.DWORD),
             ]
 
+        class _MIB_TCPROW(ctypes.Structure):
+            """ساختار ۲۰ بایتی دقیقی که GetPerTcpConnectionEStats می‌خواهد
+            (PMIB_TCPROW) — به‌جای پاس دادن اشاره‌گر به سطر جدول مالک،
+            یک کپی تمیز می‌سازیم تا هیچ شکی درباره‌ی چیدمان حافظه نماند."""
+
+            _fields_ = [
+                ("dwState", wintypes.DWORD),
+                ("dwLocalAddr", wintypes.DWORD),
+                ("dwLocalPort", wintypes.DWORD),
+                ("dwRemoteAddr", wintypes.DWORD),
+                ("dwRemotePort", wintypes.DWORD),
+            ]
+
         class _TCP_ESTATS_DATA_RW_v0(ctypes.Structure):
             _fields_ = [("EnableCollection", wintypes.BOOLEAN)]
 
@@ -56,6 +74,7 @@ if WIN32:
             ]
 
         _Row, _RW, _ROD = _MIB_TCPROW_OWNER_PID, _TCP_ESTATS_DATA_RW_v0, _TCP_ESTATS_DATA_ROD_v0
+        _TcpRow = _MIB_TCPROW
 
         _GetExtendedTcpTable = _iphlpapi.GetExtendedTcpTable
         _GetExtendedTcpTable.argtypes = [
@@ -84,14 +103,23 @@ def _decode_port(dword_port):
 
 
 def _enum_rows():
-    """Yields (state, remote_port, local_port, remote_addr, pid, row_addr)."""
+    """Yields (state, rport, lport, raddr, pid, row_fields).
+
+    row_fields پنج‌تایی اعداد سطر TCP است که برای GetPerTcpConnectionEStats
+    در یک ساختار _MIB_TCPROW تمیز کپی می‌شود.
+    """
     from ctypes import wintypes
 
-    size = wintypes.DWORD(0)
-    if _GetExtendedTcpTable(None, ctypes.byref(size), False, 2, 5, 0) != 122:
-        return
-    buf = ctypes.create_string_buffer(size.value)
-    if _GetExtendedTcpTable(buf, ctypes.byref(size), False, 2, 5, 0) != 0:
+    buf = None
+    for _try in range(4):
+        size = wintypes.DWORD(0)
+        if _GetExtendedTcpTable(None, ctypes.byref(size), False, 2, 5, 0) != 122:
+            return
+        buf = ctypes.create_string_buffer(size.value)
+        if _GetExtendedTcpTable(buf, ctypes.byref(size), False, 2, 5, 0) == 0:
+            break
+        buf = None  # جدول بین دو فراخوانی بزرگ شد؛ دوباره سایز بگیر
+    if buf is None:
         return
     n = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD)).contents.value
     base = ctypes.addressof(buf) + ctypes.sizeof(wintypes.DWORD)
@@ -106,18 +134,29 @@ def _enum_rows():
                 _decode_port(row.dwLocalPort),
                 int(row.dwRemoteAddr),
                 int(row.dwOwningPid),
-                addr,
+                (int(row.dwState), int(row.dwLocalAddr),
+                 int(row.dwLocalPort), int(row.dwRemoteAddr),
+                 int(row.dwRemotePort)),
             )
         except Exception:
             continue
 
 
-def _enable(addr):
+def _make_tcp_row(fields):
+    """کپی تمیز ۲۰ بایتی از سطر برای پاس دادن به GetPerTcpConnectionEStats."""
+    r = _TcpRow()
+    (r.dwState, r.dwLocalAddr, r.dwLocalPort,
+     r.dwRemoteAddr, r.dwRemotePort) = fields
+    return r
+
+
+def _enable(fields):
+    row = _make_tcp_row(fields)
     rw = _RW()
     rw.EnableCollection = True
     try:
         return _GetPerTcpConnectionEStats(
-            addr, 0,
+            ctypes.byref(row), 0,
             ctypes.byref(rw), 0, ctypes.sizeof(rw),
             None, 0, 0, None, 0, 0,
         ) == 0
@@ -125,11 +164,12 @@ def _enable(addr):
         return False
 
 
-def _read(addr):
+def _read(fields):
+    row = _make_tcp_row(fields)
     rod = _ROD()
     try:
         rc = _GetPerTcpConnectionEStats(
-            addr, 0,
+            ctypes.byref(row), 0,
             None, 0, 0, None, 0, 0,
             ctypes.byref(rod), 0, ctypes.sizeof(rod),
         )
@@ -149,7 +189,7 @@ class ProcNetMonitor:
         self._enabled = set()
         self._prev = {}
         self._last_t = None
-        self.available = bool(_iphlpapi)
+        self.available = bool(_iphlpapi) and not _NO_ESTATS
 
     def sample(self):
         if not self.available:
@@ -168,17 +208,17 @@ class ProcNetMonitor:
         cur = {}
         per_pid = {}
         seen = set()
-        for state, rport, lport, raddr, pid, addr in _enum_rows():
+        for state, rport, lport, raddr, pid, fields in _enum_rows():
             if state != MIB_TCP_STATE_ESTAB:
                 continue
             key = (raddr, rport, lport, pid)
             seen.add(key)
             if key not in self._enabled:
-                if _enable(addr):
+                if _enable(fields):
                     self._enabled.add(key)
                 else:
                     continue
-            val = _read(addr)
+            val = _read(fields)
             if val is None:
                 continue
             cur[key] = val
