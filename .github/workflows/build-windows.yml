@@ -33,7 +33,7 @@ jobs:
 
     - name: Build portable onefile EXE (always elevated)
       run: |
-        pyinstaller --noconfirm --onefile --windowed --uac-admin --name LagSlice --icon assets/lagslice.ico --add-data "assets/lagslice-logo.png;." --add-data "docs/about-dialog-fa.txt;docs" --add-data "docs/lagslice-help-fa.pdf;docs" --add-data "assets/fonts;fonts" --collect-all PyQt6 app/main.py
+        pyinstaller --noconfirm --onefile --windowed --uac-admin --name LagSlice --icon assets/lagslice.ico --add-data "assets/lagslice-logo.png;." --add-data "docs/about-dialog-fa.txt;docs" --add-data "docs/lagslice-help-fa.pdf;docs" --add-data "assets/fonts;fonts" --add-data "version.txt;." --add-data "CHANGELOG_FA.md;." --collect-all PyQt6 app/main.py
 
     - name: Build source archive (AGPL Corresponding Source)
       shell: pwsh

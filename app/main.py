@@ -134,10 +134,32 @@ def _fmt_rate(bps):
         return f"{bps / 1e3:.0f} Kbps"
     return f"{bps:.0f} bps"
 
-__version__ = "0.2.0"
+__version__ = "0.2.6"  # fallback؛ مقدار واقعی از version.txt خوانده می‌شود
+
+
+def _read_version():
+    """نسخه از version.txt باندل‌شده (_MEIPASS) یا ریشه‌ی مخزن."""
+    cands = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        cands.append(os.path.join(meipass, "version.txt"))
+    cands.append(os.path.join(APP_DIR, "..", "version.txt"))
+    for p in cands:
+        try:
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    v = f.read().strip().split()
+                    if v:
+                        return v[0]
+        except OSError:
+            pass
+    return __version__
+
 
 APP_DIR = base_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "lagslice_config.json")
+
+__version__ = _read_version()
 
 
 def asset_path(name):
@@ -471,6 +493,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_about.setObjectName("Lang")
         self.btn_about.clicked.connect(self.show_about)
         head.addWidget(self.btn_about)
+        self.btn_update = QtWidgets.QPushButton()
+        self.btn_update.setObjectName("Lang")
+        self.btn_update.clicked.connect(self.show_update)
+        head.addWidget(self.btn_update)
         self.btn_help = QtWidgets.QPushButton()
         self.btn_help.setObjectName("Lang")
         self.btn_help.clicked.connect(self.show_help)
@@ -551,6 +577,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.sub_lbl.setText(tr("app_subtitle"))
         self.btn_lang.setText("EN" if rtl else "فا")
         self.btn_about.setText(tr("about_btn"))
+        self.btn_update.setText(tr("upd_btn"))
         self.btn_help.setText(tr("help_btn"))
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
@@ -589,6 +616,30 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
     def show_about(self):
         AboutDialog(self).exec()
+
+    def show_update(self):
+        """بررسی دستی آپدیت از دکمه‌ی سربرگ."""
+        import updater
+        from PyQt6.QtWidgets import QMessageBox
+        self.btn_update.setText(tr("upd_checking"))
+        self.btn_update.setEnabled(False)
+        try:
+            has, info = updater.check_for_update()
+        except Exception:
+            has, info = False, "خطا در بررسی آپدیت."
+        self.btn_update.setText(tr("upd_btn"))
+        self.btn_update.setEnabled(True)
+        if has and isinstance(info, dict):
+            updater.show_update_available_dialog(self, info)
+        elif isinstance(info, str) and info:
+            QMessageBox.warning(self, tr("upd_btn"), info)
+        else:
+            QMessageBox.information(self, tr("upd_btn"), tr("upd_none"))
+
+    @QtCore.pyqtSlot(object)
+    def _show_update_available(self, info):
+        import updater
+        updater.show_update_available_dialog(self, info)
 
     def show_help(self):
         p = guide_path()
@@ -1322,6 +1373,16 @@ def main():
     app.setStyleSheet(QSS)
     win = LagSliceWindow()
     win.show()
+
+    # --- موتور آپدیت: پنجره‌ی «به‌روزرسانی انجام شد» + بررسی پس‌زمینه ---
+    import updater
+    if updater.get_update_notice():
+        QtCore.QTimer.singleShot(
+            800, lambda: updater.show_update_done_dialog(win))
+    if getattr(sys, "frozen", False):
+        QtCore.QTimer.singleShot(
+            3000, lambda: updater.check_in_background(win))
+
     sys.exit(app.exec())
 
 
