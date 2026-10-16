@@ -20,22 +20,30 @@ import traceback
 # کلید عیب‌یابی کرش شماره‌ی ۲: با LAGSLICE_NO_PSUTIL=1 کل ماژول psutil
 # با یک نسخه‌ی تقلبی جایگزین می‌شود (شبکه صفر، لیست پروسس خالی).
 # باید قبل از هر import دیگری باشد تا همه‌ی ماژول‌ها همان را بگیرند.
-if os.environ.get("LAGSLICE_NO_PSUTIL", "") == "1":
+_NO_PSUTIL = os.environ.get("LAGSLICE_NO_PSUTIL", "") == "1"
+_NO_PROCITER = os.environ.get("LAGSLICE_NO_PROCITER", "") == "1"
+if _NO_PSUTIL or _NO_PROCITER:
     import types
 
     _psutil_fake = types.ModuleType("psutil")
 
-    def _fake_net_io_counters():
-        return types.SimpleNamespace(bytes_sent=0, bytes_recv=0,
-                                     packets_sent=0, packets_recv=0,
-                                     errin=0, errout=0, dropin=0, dropout=0)
+    if _NO_PSUTIL:
+        def _fake_net_io_counters():
+            return types.SimpleNamespace(bytes_sent=0, bytes_recv=0,
+                                         packets_sent=0, packets_recv=0,
+                                         errin=0, errout=0, dropin=0, dropout=0)
+    else:
+        import psutil as _psutil_real
+        _fake_net_io_counters = _psutil_real.net_io_counters
+        del _psutil_real
 
     _psutil_fake.net_io_counters = _fake_net_io_counters
+    # در هر دو حالت عیب‌یابی، process_iter خاموش است (مظنون اصلی کرش)
     _psutil_fake.process_iter = lambda *a, **k: iter(())
 
     class _FakeProcess:
         def __init__(self, *a, **k):
-            raise RuntimeError("psutil disabled (LAGSLICE_NO_PSUTIL=1)")
+            raise RuntimeError("process_iter disabled for crash diagnosis")
 
     _psutil_fake.Process = _FakeProcess
     for _exc_name in ("NoSuchProcess", "AccessDenied", "TimeoutExpired",
@@ -43,6 +51,7 @@ if os.environ.get("LAGSLICE_NO_PSUTIL", "") == "1":
         setattr(_psutil_fake, _exc_name, type(_exc_name, (Exception,), {}))
     sys.modules["psutil"] = _psutil_fake
     del _psutil_fake
+del _NO_PSUTIL, _NO_PROCITER
 
 
 def _crash_log_path():
@@ -132,7 +141,8 @@ _enable_faulthandler()
 # تا موقع بررسی کرش معلوم باشد برنامه در کدام حالت اجرا شده است.
 for _diag_key, _diag_msg in (
         ("LAGSLICE_NO_ESTATS", "EStats disabled for crash diagnosis"),
-        ("LAGSLICE_NO_PSUTIL", "psutil disabled for crash diagnosis")):
+        ("LAGSLICE_NO_PSUTIL", "psutil disabled for crash diagnosis"),
+        ("LAGSLICE_NO_PROCITER", "process_iter disabled for crash diagnosis")):
     if os.environ.get(_diag_key, "") == "1":
         try:
             with open(_crash_log_path(), "a", encoding="utf-8") as _df:
@@ -144,7 +154,7 @@ del _diag_key, _diag_msg
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from lang import tr, set_lang, get_lang, fa_digits
-from netmon import NetMonitor, delay_health
+from netmon import NetMonitor, delay_health, _diag
 from procman import (
     iter_processes, kill_process, stream_mode_cleanup,
     load_safelist, save_safelist, is_admin, base_dir,
@@ -801,7 +811,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
                 self._set_kill_button(r, p["pid"])
             return
+        _diag("refresh_procs: iter_processes begin")
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
+        _diag("refresh_procs: iter_processes ok")
         self.proc_table.setHorizontalHeaderLabels(
             [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         if not procs:
