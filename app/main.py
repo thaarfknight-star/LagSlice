@@ -702,6 +702,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         t.setItem(0, 0, msg)
         t.setSpan(0, 0, 1, t.columnCount())
 
+    # تشخیص کرش 0.2.5: دکمه‌های kill جدول موقتاً حذف شدند.
+    _NO_KILL_BUTTONS = True
+
     def refresh_procs(self):
         # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
         self.proc_table.clearSpans()
@@ -754,7 +757,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 2, self._tcell(fa_digits(_fmt_rate(p["down"])), numeric=True))
                 self.proc_table.setItem(
                     r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
-                self._set_kill_button(r, p["pid"])
+                # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
             return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
         self.proc_table.setHorizontalHeaderLabels(
@@ -773,7 +776,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 r, 2, self._tcell(fa_digits(p["cpu"]) if p["cpu"] is not None else "—",
                                   numeric=True))
             self.proc_table.setItem(r, 3, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
-            self._set_kill_button(r, p["pid"])
+            # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
         self.proc_table.resizeColumnsToContents()
 
     def _kill_one(self, pid):
