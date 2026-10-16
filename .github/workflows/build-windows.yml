@@ -2,7 +2,7 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "feat/installer" ]
     paths-ignore:
       - '**.md'
   workflow_dispatch:
@@ -40,14 +40,56 @@ jobs:
       run: |
         $ver = (Get-Content version.txt -Raw).Trim()
         $zip = "dist/LagSlice-source-v$ver.zip"
-        $files = @("app","assets","docs","main.py","requirements.txt","LICENSE","THIRD_PARTY_NOTICES","README.md","version.txt")
+        $files = @("app","assets","docs","installer","main.py","requirements.txt","LICENSE","THIRD_PARTY_NOTICES","README.md","version.txt")
         Compress-Archive -Path $files -DestinationPath $zip -Force
+
+    - name: Read version
+      id: ver
+      shell: pwsh
+      run: |
+        $v = (Get-Content version.txt -Raw).Trim()
+        "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Build portable ZIP
+      shell: pwsh
+      run: |
+        $ver = "${{ steps.ver.outputs.version }}"
+        $root = "portable/LagSlice-v$ver"
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        Copy-Item "dist/LagSlice.exe" "$root/"
+        Copy-Item "LICENSE" "$root/"
+        Copy-Item "THIRD_PARTY_NOTICES" "$root/"
+        Copy-Item "docs/lagslice-help-fa.pdf" "$root/"
+        Compress-Archive -Path "portable/LagSlice-v$ver" -DestinationPath "dist/LagSlice-portable-v$ver.zip" -Force
+
+    - name: Install Inno Setup
+      uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      with:
+        inno-setup-version: 6
+
+    - name: Build installer (Inno Setup, neon theme)
+      shell: pwsh
+      run: |
+        $ver = "${{ steps.ver.outputs.version }}"
+        iscc "installer/lagslice.iss" /DAppVersion="$ver"
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
       with:
         name: LagSlice-win
         path: dist/LagSlice.exe
+
+    - name: Upload portable ZIP artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LagSlice-portable
+        path: dist/LagSlice-portable-*.zip
+
+    - name: Upload installer artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: LagSlice-setup
+        path: dist/LagSlice-Setup-*.exe
 
     - name: Upload source archive + third-party notices
       uses: actions/upload-artifact@v4
@@ -101,6 +143,20 @@ jobs:
         name: LagSlice-source
         path: rel-assets/src
 
+    - name: Download portable artifact
+      if: steps.chk.outputs.exists == 'false'
+      uses: actions/download-artifact@v4
+      with:
+        name: LagSlice-portable
+        path: rel-assets/portable
+
+    - name: Download installer artifact
+      if: steps.chk.outputs.exists == 'false'
+      uses: actions/download-artifact@v4
+      with:
+        name: LagSlice-setup
+        path: rel-assets/setup
+
     - name: Create GitHub Release
       if: steps.chk.outputs.exists == 'false'
       shell: pwsh
@@ -111,13 +167,18 @@ jobs:
         $notes = @"
         LagSlice v$ver — بهینه‌ساز استریم (ویندوز)
 
-        اجرا: فایل LagSlice.exe را دانلود و با Run as administrator اجرا کنید.
-        Run: download LagSlice.exe and run as administrator.
+        نصب پیشنهادی: فایل LagSlice-Setup-v$ver.exe را اجرا کنید (تم نئونی).
+        نسخه‌ی قابل‌حمل: LagSlice-portable-v$ver.zip را باز کنید و LagSlice.exe را با Run as administrator اجرا کنید.
+
+        Recommended: run LagSlice-Setup-v$ver.exe (neon-themed installer).
+        Portable: extract LagSlice-portable-v$ver.zip and run LagSlice.exe as administrator.
 
         سورس‌کد همین نسخه + اعلامیه‌های شخص ثالث ضمیمه شده است (تعهد AGPL-3.0).
         Corresponding source + third-party notices attached (AGPL-3.0).
         "@
         gh release create "v$ver" --title "LagSlice v$ver" --notes $notes `
           (Get-ChildItem -Path rel-assets -Filter "LagSlice.exe" -Recurse | Select-Object -First 1).FullName `
+          (Get-ChildItem -Path rel-assets -Filter "LagSlice-portable-*.zip" -Recurse | Select-Object -First 1).FullName `
+          (Get-ChildItem -Path rel-assets -Filter "LagSlice-Setup-*.exe" -Recurse | Select-Object -First 1).FullName `
           (Get-ChildItem -Path rel-assets -Filter "LagSlice-source-*.zip" -Recurse | Select-Object -First 1).FullName `
           (Get-ChildItem -Path rel-assets -Filter "THIRD_PARTY_NOTICES" -Recurse | Select-Object -First 1).FullName
