@@ -299,6 +299,31 @@ STRINGS = {
         "fa": "همه‌ی برنامه‌های اینترنت‌خور (غیر از لیست امن) را یک‌جا می‌بندد.",
         "en": "Closes all bandwidth-hogging apps at once (except the safe list).",
     },
+    # ---- حالت دانلود (استفاده‌ی روزمره) ----
+    "mode_stream": {"fa": "🎥 حالت استریم", "en": "🎥 Stream mode"},
+    "mode_download": {"fa": "⬇ حالت دانلود", "en": "⬇ Download mode"},
+    "mode_tip": {
+        "fa": "در حالت دانلود، رقبای دانلود (لانچرهای بازی و همگام‌سازی ابری) بسته می‌شوند تا پهنای باند برای استیم و ویدیو آزاد بماند؛ استیم و مرورگر بسته نمی‌شوند.",
+        "en": "In download mode, download competitors (game launchers and cloud sync) are closed to free bandwidth for Steam and video; Steam and browsers are never closed.",
+    },
+    "dl_start": {"fa": "⬇ بهینه‌سازی دانلود", "en": "⬇ Optimize downloads"},
+    "dl_stop": {"fa": "⏹ توقف بهینه‌سازی", "en": "⏹ Stop optimizing"},
+    "dl_confirm_title": {"fa": "تأیید بهینه‌سازی دانلود", "en": "Confirm download optimization"},
+    "dl_confirm_msg": {
+        "fa": "این {n} برنامه‌ی رقیب دانلود بسته می‌شوند:\n{names}\n\nمطمئنی؟ استیم، مرورگر و برنامه‌های لیست امن بسته نمی‌شوند.",
+        "en": "These {n} download-competing apps will be closed:\n{names}\n\nSure? Steam, browsers and safe-listed apps will not be closed.",
+    },
+    "log_dl_on": {"fa": "⬇ بهینه‌سازی دانلود فعال شد؛ بستن رقبای دانلود…", "en": "⬇ Download optimization on; closing download competitors…"},
+    "log_dl_off": {"fa": "بهینه‌سازی دانلود متوقف شد", "en": "Download optimization stopped"},
+    "log_dl_cancel": {"fa": "بهینه‌سازی دانلود لغو شد", "en": "Download optimization cancelled"},
+    "log_mode_stream": {"fa": "🎥 حالت استریم انتخاب شد", "en": "🎥 Stream mode selected"},
+    "log_mode_download": {"fa": "⬇ حالت دانلود انتخاب شد", "en": "⬇ Download mode selected"},
+    "status_downloading": {"fa": "⬇ بهینه‌سازی دانلود فعال", "en": "⬇ Download optimization active"},
+    "stat_competitors": {"fa": "مصرف رقبا", "en": "Competitors' usage"},
+    "tip_competitors": {
+        "fa": "مجموع دانلود لحظه‌ای برنامه‌های رقیب دانلود (لانچرها و همگام‌سازی ابری). هرچه کمتر، پهنای باند بیشتری برای استیم و ویدیو آزاد است.",
+        "en": "Total current download usage of download-competing apps (launchers and cloud sync). The lower, the more bandwidth is free for Steam and video.",
+    },
     # ---- پیام‌های بستن پروسس ----
     "kill_ok": {"fa": "بسته شد", "en": "closed"},
     "kill_gone": {"fa": "پروسس از قبل بسته شده بود", "en": "Process was already closed"},

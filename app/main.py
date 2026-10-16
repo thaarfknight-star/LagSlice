@@ -110,6 +110,7 @@ from procman import (
     iter_processes, kill_process, stream_mode_cleanup,
     snapshot_procs, pid_to_name,
     load_safelist, save_safelist, is_admin, base_dir,
+    is_hog,
     NEVER_TOUCH, HOG_PATTERNS,
 )
 from servers import (
@@ -258,7 +259,8 @@ QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radi
 
 
 def load_config():
-    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa"}
+    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa",
+           "mode": "stream"}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -268,6 +270,8 @@ def load_config():
         pass
     if cfg.get("lang") not in ("fa", "en"):
         cfg["lang"] = "fa"
+    if cfg.get("mode") not in ("stream", "download"):
+        cfg["mode"] = "stream"
     return cfg
 
 
@@ -292,12 +296,16 @@ class StatCard(QtWidgets.QFrame):
         self.retranslate()
 
     def retranslate(self):
-        self.name_lbl.setText(tr(self._name_key))
-        # حسابرسی RTL: لیبل فارسی راست‌چین؛ مقدار عددی همیشه چپ‌چین/LTR
+        self.name_lbl.setText(tr(self._name_key))        # حسابرسی RTL: لیبل فارسی راست‌چین؛ مقدار عددی همیشه چپ‌چین/LTR
         rtl = get_lang() == "fa"
         self.name_lbl.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight if rtl
             else QtCore.Qt.AlignmentFlag.AlignLeft)
+
+    def set_name_key(self, key):
+        """تعویض لیبل کارت (برای حالت دانلود/استریم)."""
+        self._name_key = key
+        self.retranslate()
         self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
         self.val_lbl.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight if rtl
@@ -465,6 +473,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.servers = load_servers()
         self.streaming = False
         self._last_delay_key = "unknown"
+        self._last_comp_down_mbps = 0.0
         self._scan_thread = None
         self._scanning = False
         self._scan_results = {}
@@ -497,6 +506,17 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_lang.setObjectName("Lang")
         self.btn_lang.clicked.connect(self.toggle_lang)
         head.addWidget(self.btn_lang)
+        # سوییچ حالت: استریم / دانلود
+        self.btn_mode_stream = QtWidgets.QPushButton()
+        self.btn_mode_stream.setObjectName("Lang")
+        self.btn_mode_stream.clicked.connect(lambda: self.set_mode("stream"))
+        self.btn_mode_stream.setToolTip(tr("mode_tip"))
+        head.addWidget(self.btn_mode_stream)
+        self.btn_mode_download = QtWidgets.QPushButton()
+        self.btn_mode_download.setObjectName("Lang")
+        self.btn_mode_download.clicked.connect(lambda: self.set_mode("download"))
+        self.btn_mode_download.setToolTip(tr("mode_tip"))
+        head.addWidget(self.btn_mode_download)
         self.btn_about = QtWidgets.QPushButton()
         self.btn_about.setObjectName("Lang")
         self.btn_about.clicked.connect(self.show_about)
@@ -586,6 +606,13 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_lang.setText("EN" if rtl else "فا")
         self.btn_about.setText(tr("about_btn"))
         self.btn_update.setText(tr("upd_btn"))
+        self.btn_mode_stream.setText(tr("mode_stream"))
+        self.btn_mode_download.setText(tr("mode_download"))
+        self.btn_mode_stream.setToolTip(tr("mode_tip"))
+        self.btn_mode_download.setToolTip(tr("mode_tip"))
+        self._refresh_mode_buttons()
+        self._refresh_stream_btn()
+        self._update_delay_card()
         self.btn_help.setText(tr("help_btn"))
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
@@ -664,7 +691,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
     def _refresh_pill(self):
         if self.streaming:
-            self.pill.setText(tr("status_streaming"))
+            dl = self.cfg.get("mode", "stream") == "download"
+            self.pill.setText(tr("status_downloading" if dl
+                                 else "status_streaming"))
             self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
         else:
             self.pill.setText(tr("status_ready"))
@@ -681,11 +710,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._pill_anim = anim
 
     def _refresh_stream_btn(self):
+        dl = self.cfg.get("mode", "stream") == "download"
         if self.streaming:
-            self.btn_stream.setText(tr("stream_stop"))
+            self.btn_stream.setText(tr("dl_stop" if dl else "stream_stop"))
             self.btn_stream.setObjectName("Stop")
         else:
-            self.btn_stream.setText(tr("stream_start"))
+            self.btn_stream.setText(tr("dl_start" if dl else "stream_start"))
             self.btn_stream.setObjectName("Go")
         self.btn_stream.setStyleSheet("")
 
@@ -783,7 +813,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 lname = name.lower()
                 if lname in NEVER_TOUCH or lname in self.safelist:
                     continue
-                kind = "hog" if lname in HOG_PATTERNS else "other"
+                kind = ("hog" if is_hog(lname, self.cfg.get("mode", "stream"))
+                        else "other")
                 hog_key = "hog_" + lname
                 rows.append({
                     "pid": int(pid), "name": name,
@@ -810,7 +841,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 self.proc_table.setItem(r, 4, self._tcell("—", numeric=True))
                 self._set_kill_button(r, p["pid"])
             return
-        procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
+        procs = [p for p in iter_processes(self.safelist, self.cfg.get("mode", "stream"))
+                 if p["kind"] != "safe"]
         if not procs:
             self._show_table_empty()
             return
@@ -1363,27 +1395,80 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.card_ping.set(fa_digits(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
             self.card_ping.set(tr("disconnected"), RED)
-        self._last_delay_key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
+        if self.cfg.get("mode", "stream") == "download":
+            # مجموع دانلود لحظه‌ای رقبای دانلود (به مگابیت‌برثانیه)
+            comp_bps = 0.0
+            for pid, e in (s.get("per_proc") or {}).items():
+                try:
+                    name = (pid_to_name(int(pid)) or "").lower()
+                except Exception:
+                    continue
+                if not name or name in self.safelist:
+                    continue
+                if is_hog(name, "download"):
+                    try:
+                        comp_bps += float(e.get("down_bps", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+            self._last_comp_down_mbps = comp_bps / 1e6
+        else:
+            self._last_delay_key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
         self._update_delay_card()
 
     def _update_delay_card(self):
+        if self.cfg.get("mode", "stream") == "download":
+            self.card_delay.set_name_key("stat_competitors")
+            self.card_delay.setToolTip(tr("tip_competitors"))
+            mbps = getattr(self, "_last_comp_down_mbps", 0.0)
+            color = GREEN if mbps < 0.5 else (AMBER if mbps < 5 else RED)
+            self.card_delay.set(fa_digits(f"{mbps:.1f}") + " Mbps", color)
+            return
+        self.card_delay.set_name_key("stat_delay")
         key = self._last_delay_key
         color = {"good": GREEN, "warn": AMBER, "bad": RED, "unknown": MUTED}[key]
         self.card_delay.set(tr("delay_" + key), color)
         self.card_delay.setToolTip(tr("delay_" + key + "_d"))
 
-    # ---------- حالت استریم ----------
+    # ---------- سوییچ حالت: استریم / دانلود ----------
+    def set_mode(self, mode):
+        if mode == self.cfg.get("mode", "stream"):
+            return
+        self.cfg["mode"] = mode
+        save_config(self.cfg)
+        self._refresh_mode_buttons()
+        self._refresh_stream_btn()
+        self._update_delay_card()
+        self.refresh_procs()
+        self.log(tr("log_mode_download" if mode == "download"
+                     else "log_mode_stream"))
+
+    def _refresh_mode_buttons(self):
+        mode = self.cfg.get("mode", "stream")
+        for btn, m in ((self.btn_mode_stream, "stream"),
+                       (self.btn_mode_download, "download")):
+            if m == mode:
+                btn.setStyleSheet(
+                    f"border: 2px solid {CYAN}; background-color: #1B2940;")
+            else:
+                btn.setStyleSheet("")
+
+    # ---------- حالت استریم / بهینه‌سازی دانلود ----------
     def toggle_stream(self):
+        mode = self.cfg.get("mode", "stream")
+        dl = mode == "download"
         if not self.streaming:
             # تأیید قبل از کار خطرناک: بستن دسته‌جمعی برنامه‌ها
-            victims = [p for p in iter_processes(self.safelist) if p["kind"] == "hog"]
+            victims = [p for p in iter_processes(self.safelist, mode)
+                       if p["kind"] == "hog"]
             if victims:
                 names = ", ".join(p["name"] for p in victims[:8])
                 if len(victims) > 8:
                     names += f" (+{fa_digits(len(victims) - 8)})"
                 box = QtWidgets.QMessageBox(self)
-                box.setWindowTitle(tr("stream_confirm_title"))
-                box.setText(tr("stream_confirm_msg").format(
+                box.setWindowTitle(tr("dl_confirm_title" if dl
+                                      else "stream_confirm_title"))
+                box.setText(tr("dl_confirm_msg" if dl
+                               else "stream_confirm_msg").format(
                     n=fa_digits(len(victims)), names=names))
                 box.setStandardButtons(
                     QtWidgets.QMessageBox.StandardButton.Yes
@@ -1394,10 +1479,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     tr("stream_confirm_no"))
                 box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
                 if box.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
-                    self.log(tr("log_stream_cancel"))
+                    self.log(tr("log_dl_cancel" if dl else "log_stream_cancel"))
                     return
-            self.log(tr("log_stream_on"))
-            killed, skipped = stream_mode_cleanup(self.safelist)
+            self.log(tr("log_dl_on" if dl else "log_stream_on"))
+            killed, skipped = stream_mode_cleanup(self.safelist, mode)
             for name, key, param in killed:
                 self.log("🔥 " + self._fmt_kill(name, key, param))
             for name, key, param in skipped:
@@ -1411,7 +1496,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.streaming = False
             self._refresh_stream_btn()
             self._refresh_pill()
-            self.log(tr("log_stream_off"))
+            self.log(tr("log_dl_off" if dl else "log_stream_off"))
 
     @staticmethod
     def _fmt_kill(name, key, param):

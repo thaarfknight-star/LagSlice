@@ -63,6 +63,34 @@ HOG_PATTERNS = {
     "slack.exe",
 }
 
+# الگوهای رقیب دانلود: در «حالت دانلود» بسته می‌شوند تا پهنای باند
+# دانلود برای هدف‌های کاربر (استیم، ویدیو) آزاد بماند —
+# لانچرهای رقیب (آپدیت پس‌زمینه) + همگام‌سازی ابری
+DOWNLOAD_HOG_PATTERNS = {
+    "epicgameslauncher.exe", "ubisoftconnect.exe", "eadesktop.exe",
+    "battle.net.exe", "riotclientservices.exe", "goggalaxy.exe",
+    "onedrive.exe", "dropbox.exe", "googledrivesync.exe", "googledrivefs.exe",
+}
+
+# در «حالت دانلود» هرگز بسته نمی‌شوند (هدف‌های دانلود خود کاربر) —
+# حتی اگر در حالت استریم جزو الگوهای اینترنت‌خور باشند
+DOWNLOAD_KEEP = {
+    "steam.exe", "steamwebhelper.exe", "gameoverlayui.exe",
+    "utorrent.exe", "qbittorrent.exe", "bittorrent.exe",
+    "chrome.exe", "firefox.exe", "msedge.exe", "opera.exe",
+    "brave.exe", "vivaldi.exe",
+}
+
+
+def is_hog(lname, mode="stream"):
+    """آیا این پروسس در حالت داده‌شده «اینترنت‌خور» و کاندیدای بستن است؟"""
+    lname = (lname or "").lower()
+    if mode == "download":
+        if lname in DOWNLOAD_KEEP:
+            return False
+        return lname in DOWNLOAD_HOG_PATTERNS
+    return lname in HOG_PATTERNS
+
 DEFAULT_SAFELIST = [
     # بازی و استریم — هرگز بسته نمی‌شوند
     "cs2.exe",
@@ -176,11 +204,13 @@ def pid_to_name(pid):
     return ""
 
 
-def iter_processes(safelist):
+def iter_processes(safelist, mode="stream"):
     """لیست پروسس‌های کاربر؛ هر کدام: pid, name, cpu, mem_mb, kind.
 
     cpu همیشه None است (ستون «—» نشان می‌دهد): خواندن درصد CPU هر پروسس
     با psutil روی بعضی سیستم‌ها کرش native می‌داد، پس کلاً حذف شد.
+    kind بر اساس mode تعیین می‌شود: در حالت دانلود، الگوهای رقیب دانلود
+    «hog» و هدف‌های دانلود (استیم و…) هرگز «hog» نیستند.
     """
     out = []
     for p in snapshot_procs():
@@ -193,7 +223,7 @@ def iter_processes(safelist):
                 continue
             if lname in safelist:
                 kind = "safe"
-            elif lname in HOG_PATTERNS:
+            elif is_hog(lname, mode):
                 kind = "hog"
             else:
                 kind = "other"
@@ -240,11 +270,12 @@ def kill_process(pid):
         return False, "kill_err", str(e)[:200]
 
 
-def stream_mode_cleanup(safelist):
+def stream_mode_cleanup(safelist, mode="stream"):
     """بستن همه‌ی کاندیداهای اینترنت‌خور که در لیست امن نیستند.
+    در حالت دانلود فقط رقبای دانلود بسته می‌شوند.
     برمی‌گرداند لیستی از (name, key, param)."""
     killed, skipped = [], []
-    for proc in iter_processes(safelist):
+    for proc in iter_processes(safelist, mode):
         if proc["kind"] != "hog":
             continue
         ok, key, param = kill_process(proc["pid"])
