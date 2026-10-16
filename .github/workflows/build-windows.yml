@@ -62,16 +62,11 @@ jobs:
         Copy-Item "docs/lagslice-help-fa.pdf" "$root/"
         Compress-Archive -Path "portable/LagSlice-v$ver" -DestinationPath "dist/LagSlice-portable-v$ver.zip" -Force
 
-    - name: Install Inno Setup
+    - name: Build installer (Inno Setup, neon theme)
       uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
       with:
-        inno-setup-version: 6
-
-    - name: Build installer (Inno Setup, neon theme)
-      shell: pwsh
-      run: |
-        $ver = "${{ steps.ver.outputs.version }}"
-        iscc "installer/lagslice.iss" /DAppVersion="$ver"
+        path: installer/lagslice.iss
+        options: /DAppVersion=${{ steps.ver.outputs.version }}
 
     - name: Upload EXE artifact
       uses: actions/upload-artifact@v4
