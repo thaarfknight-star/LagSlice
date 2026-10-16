@@ -237,6 +237,17 @@ STRINGS = {
         "en": "Ping uses the first server in the list. Set bitrate to match your MeldStudio settings.",
     },
     "lang_label": {"fa": "زبان / Language:", "en": "Language / زبان:"},
+    # ---- صفحه‌ی تنظیمات (بخش‌های جدید) ----
+    "set_sec_net": {"fa": "🌐 سرور پینگ و بیت‌ریت", "en": "🌐 Ping servers & bitrate"},
+    "set_sec_lang": {"fa": "🌍 زبان برنامه", "en": "🌍 App language"},
+    "set_sec_contact": {"fa": "💬 پشتیبانی", "en": "💬 Support"},
+    "set_sec_help": {"fa": "📖 راهنما", "en": "📖 Guide"},
+    "set_sec_about": {"fa": "ℹ درباره / لایسنس", "en": "ℹ About / License"},
+    "set_telegram": {"fa": "تلگرام:", "en": "Telegram:"},
+    "set_telegram_open": {"fa": "باز کردن در تلگرام", "en": "Open in Telegram"},
+    "set_copy": {"fa": "📋 کپی", "en": "📋 Copy"},
+    "set_copied": {"fa": "کپی شد ✓", "en": "Copied ✓"},
+    "set_open_guide": {"fa": "باز کردن فایل راهنما", "en": "Open guide file"},
     "about_btn": {"fa": "ℹ درباره", "en": "ℹ About"},
     "about_title": {"fa": "درباره‌ی LagSlice", "en": "About LagSlice"},
     # ---- لاگ ----
@@ -321,6 +332,28 @@ STRINGS = {
     "hog_zoom.exe": {"fa": "زوم", "en": "Zoom"},
     "hog_teams.exe": {"fa": "تیمز", "en": "Teams"},
     "hog_slack.exe": {"fa": "اسلک", "en": "Slack"},
+    # ---- موتور آپدیت ----
+    "upd_btn": {"fa": "⬆ بررسی آپدیت", "en": "⬆ Check for updates"},
+    "upd_checking": {"fa": "در حال بررسی…", "en": "Checking…"},
+    "upd_none": {"fa": "نسخه‌ی فعلی به‌روز است.", "en": "You're up to date."},
+    "upd_found_title": {"fa": "آپدیت جدید", "en": "Update available"},
+    "upd_later": {"fa": "بعداً", "en": "Later"},
+    "upd_download_install": {"fa": "دانلود و نصب", "en": "Download & install"},
+    "upd_downloading": {"fa": "در حال دانلود آپدیت…", "en": "Downloading update…"},
+    "upd_dev_note": {
+        "fa": "نصب خودکار فقط در نسخه‌ی نصب‌شده (exe) کار می‌کند.",
+        "en": "Auto-install works only in the installed (exe) build.",
+    },
+    "upd_restart_note": {
+        "fa": "برنامه بسته و با نسخه‌ی جدید اجرا می‌شود.",
+        "en": "The app will close and restart with the new version.",
+    },
+    "upd_done_title": {"fa": "به‌روزرسانی انجام شد", "en": "Update installed"},
+    "upd_whatsnew": {"fa": "تغییرات:", "en": "What's new:"},
+    "upd_check_failed": {
+        "fa": "بررسی آپدیت ناموفق بود؛ اتصال اینترنت را بررسی کن.",
+        "en": "Update check failed; check your internet connection.",
+    },
 }
 
 

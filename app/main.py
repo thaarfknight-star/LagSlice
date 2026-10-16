@@ -134,10 +134,32 @@ def _fmt_rate(bps):
         return f"{bps / 1e3:.0f} Kbps"
     return f"{bps:.0f} bps"
 
-__version__ = "0.2.0"
+__version__ = "0.2.6"  # fallback؛ مقدار واقعی از version.txt خوانده می‌شود
+
+
+def _read_version():
+    """نسخه از version.txt باندل‌شده (_MEIPASS) یا ریشه‌ی مخزن."""
+    cands = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        cands.append(os.path.join(meipass, "version.txt"))
+    cands.append(os.path.join(APP_DIR, "..", "version.txt"))
+    for p in cands:
+        try:
+            if os.path.isfile(p):
+                with open(p, encoding="utf-8") as f:
+                    v = f.read().strip().split()
+                    if v:
+                        return v[0]
+        except OSError:
+            pass
+    return __version__
+
 
 APP_DIR = base_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "lagslice_config.json")
+
+__version__ = _read_version()
 
 
 def asset_path(name):
@@ -201,6 +223,10 @@ QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
 QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
 QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
     border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
+QLabel#SecHead {{ font-size: 15px; font-weight: bold; color: {CYAN};
+    border-bottom: 1px solid {BORDER}; padding: 8px 2px 6px 2px; margin-top: 6px; }}
+QTextEdit#About {{ background-color: {CARD}; border: 1px solid {BORDER};
+    border-radius: 8px; padding: 8px; font-size: 12px; color: {MUTED}; }}
 QProgressBar {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
     text-align: center; color: {MUTED}; }}
 QProgressBar::chunk {{ background-color: {CYAN}; border-radius: 6px; }}
@@ -222,6 +248,10 @@ QTableWidget::item {{ padding: 4px; }}
 QHeaderView::section {{ background-color: #141C2B; color: {MUTED}; border: none; padding: 6px; }}
 QListWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button {{
+    subcontrol-origin: border; width: 24px; border: none; background: transparent; }}
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background-color: #1B2940; }}
 QTextEdit#Log {{ background-color: #080B11; border: 1px solid {BORDER}; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; }}
 QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radius: 8px; padding: 8px 12px; color: {AMBER}; }}
 """
@@ -471,6 +501,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_about.setObjectName("Lang")
         self.btn_about.clicked.connect(self.show_about)
         head.addWidget(self.btn_about)
+        self.btn_update = QtWidgets.QPushButton()
+        self.btn_update.setObjectName("Lang")
+        self.btn_update.clicked.connect(self.show_update)
+        head.addWidget(self.btn_update)
         self.btn_help = QtWidgets.QPushButton()
         self.btn_help.setObjectName("Lang")
         self.btn_help.clicked.connect(self.show_help)
@@ -551,6 +585,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.sub_lbl.setText(tr("app_subtitle"))
         self.btn_lang.setText("EN" if rtl else "فا")
         self.btn_about.setText(tr("about_btn"))
+        self.btn_update.setText(tr("upd_btn"))
         self.btn_help.setText(tr("help_btn"))
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
@@ -572,8 +607,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.tabs.setTabText(3, tr("tab_settings"))
         self.tabs.setTabText(4, tr("tab_log"))
         self.proc_hint.setText(tr("procs_hint"))
-        self.proc_table.setHorizontalHeaderLabels(
-            [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         self.safe_hint.setText(tr("safe_hint"))
         self.btn_safe_pick.setText(tr("safe_pick_btn"))
         self.btn_safe_del.setText(tr("safe_del"))
@@ -583,12 +617,43 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
+        for h in getattr(self, "_set_heads", []):
+            h.setText(tr(h.property("tkey")))
+            h.setAlignment(align)
+        self.lbl_telegram.setText(tr("set_telegram"))
+        self.btn_tg_copy.setText(tr("set_copy"))
+        self.btn_tg_open.setText(tr("set_telegram_open"))
+        self.btn_guide.setText(tr("set_open_guide"))
         self._retranslate_scan()
         self._update_delay_card()
         self.refresh_procs()
 
     def show_about(self):
         AboutDialog(self).exec()
+
+    def show_update(self):
+        """بررسی دستی آپدیت از دکمه‌ی سربرگ."""
+        import updater
+        from PyQt6.QtWidgets import QMessageBox
+        self.btn_update.setText(tr("upd_checking"))
+        self.btn_update.setEnabled(False)
+        try:
+            has, info = updater.check_for_update()
+        except Exception:
+            has, info = False, "خطا در بررسی آپدیت."
+        self.btn_update.setText(tr("upd_btn"))
+        self.btn_update.setEnabled(True)
+        if has and isinstance(info, dict):
+            updater.show_update_available_dialog(self, info)
+        elif isinstance(info, str) and info:
+            QMessageBox.warning(self, tr("upd_btn"), info)
+        else:
+            QMessageBox.information(self, tr("upd_btn"), tr("upd_none"))
+
+    @QtCore.pyqtSlot(object)
+    def _show_update_available(self, info):
+        import updater
+        updater.show_update_available_dialog(self, info)
 
     def show_help(self):
         p = guide_path()
@@ -625,6 +690,16 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_stream.setStyleSheet("")
 
     # ---------- تب برنامه‌ها ----------
+    # هدر ثابت جدول برنامه‌ها — در هر دو حالت (آمار شبکه / حالت عادی) و
+    # هنگام تعویض زبان همیشه یکی است، تا چیدمان RTL/LTR نپرد.
+    # ستون CPU حذف شد: از 0.2.4 داده‌اش همیشه «—» است (psutil کرش native می‌داد).
+    PROC_COLUMNS = ("col_app", "col_up", "col_down", "col_pid", "col_ram", "")
+    _KILL_COL = len(PROC_COLUMNS) - 1  # ستون دکمه‌ی بستن
+
+    def _proc_headers(self):
+        """هدرهای جدول برنامه‌ها — همیشه ثابت."""
+        return [tr(k) if k else "" for k in self.PROC_COLUMNS]
+
     def _build_proc_tab(self):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
@@ -632,15 +707,15 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_hint.setObjectName("Sub")
         self.proc_hint.setWordWrap(True)
         lay.addWidget(self.proc_hint)
-        self.proc_table = QtWidgets.QTableWidget(0, 5)
+        self.proc_table = QtWidgets.QTableWidget(0, len(self.PROC_COLUMNS))
         self.proc_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.proc_table.verticalHeader().setVisible(False)
-        self._kill_btn_pool = []
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         # ستون نام برنامه کش می‌آید تا جدول تمام‌عرض شود (راست‌چین)
         hh = self.proc_table.horizontalHeader()
         hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 5):
+        for i in range(1, len(self.PROC_COLUMNS)):
             hh.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         lay.addWidget(self.proc_table)
         self.tabs.addTab(w, "")
@@ -658,39 +733,31 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 | QtCore.Qt.AlignmentFlag.AlignVCenter)
         return it
 
-    def _pool_button(self, r):
-        """دکمه‌ی pool برای سطر r — اگر حذف شده بود، از نو ساخته می‌شود."""
-        btn = None
-        if r < len(self._kill_btn_pool):
-            cand = self._kill_btn_pool[r]
-            if cand is not None:
-                try:
-                    cand.setText(cand.text())  # تست زنده‌بودن
-                    btn = cand
-                except RuntimeError:
-                    btn = None
-        if btn is None:
-            btn = QtWidgets.QPushButton()
-            btn.setObjectName("Danger")
-            if r < len(self._kill_btn_pool):
-                self._kill_btn_pool[r] = btn
-            else:
-                while len(self._kill_btn_pool) < r:
-                    self._kill_btn_pool.append(None)
-                self._kill_btn_pool.append(btn)
-        return btn
+    def _clear_kill_buttons(self):
+        """حذف امن دکمه‌های kill سطرها: جدا کردن از سلول + deleteLater.
+        هر رفرش دکمه‌های تازه ساخته می‌شوند؛ هیچ ویجتی بین سلول‌ها
+        reuse نمی‌شود (reuse عامل کرش 0xc0000409 در Qt بود)."""
+        t = self.proc_table
+        for r in range(t.rowCount()):
+            try:
+                w = t.cellWidget(r, self._KILL_COL)
+            except RuntimeError:
+                continue
+            if w is None:
+                continue
+            t.removeCellWidget(r, self._KILL_COL)
+            try:
+                w.deleteLater()
+            except RuntimeError:
+                pass
 
     def _set_kill_button(self, r, pid):
-        """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
-        btn = self._pool_button(r)
+        """دکمه‌ی بستن سطر r — همیشه یک دکمه‌ی تازه ساخته می‌شود، هرگز reuse نه."""
+        btn = QtWidgets.QPushButton()
+        btn.setObjectName("Danger")
         btn.setText(tr("btn_kill"))
-        try:
-            btn.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            pass
         btn.clicked.connect(lambda _=False, pid=pid: self._kill_one(pid))
-        self.proc_table.setCellWidget(r, 4, btn)
-        btn.setVisible(True)
+        self.proc_table.setCellWidget(r, self._KILL_COL, btn)
 
     def _show_table_empty(self):
         """حالت خالیِ گویا: به‌جای جدول خالی، یک سطر پیام."""
@@ -702,26 +769,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         t.setItem(0, 0, msg)
         t.setSpan(0, 0, 1, t.columnCount())
 
-    # تشخیص کرش 0.2.5: دکمه‌های kill جدول موقتاً حذف شدند.
-    _NO_KILL_BUTTONS = True
-
     def refresh_procs(self):
-        # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
+        # پاک‌سازی امن دکمه‌های قبلی (بدون reuse) + هدر ثابت
         self.proc_table.clearSpans()
-        for r in range(self.proc_table.rowCount()):
-            try:
-                w = self.proc_table.cellWidget(r, 4)
-                if w is None:
-                    continue
-                w.isVisible()  # تست زنده‌بودن
-            except RuntimeError:
-                continue
-            if w in self._kill_btn_pool:
-                self.proc_table.removeCellWidget(r, 4)
-                try:
-                    w.setVisible(False)
-                except RuntimeError:
-                    pass
+        self._clear_kill_buttons()
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         per_proc = (getattr(self, "_last_stats", None) or {}).get("per_proc") or {}
         if per_proc:
             # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
@@ -740,8 +792,6 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     "fa": tr(hog_key) if kind == "hog" and tr(hog_key) != hog_key else "",
                 })
             rows.sort(key=lambda x: x["up"], reverse=True)
-            self.proc_table.setHorizontalHeaderLabels(
-                [tr("col_app"), tr("col_up"), tr("col_down"), tr("col_pid"), ""])
             if not rows:
                 self._show_table_empty()
                 return
@@ -757,11 +807,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 2, self._tcell(fa_digits(_fmt_rate(p["down"])), numeric=True))
                 self.proc_table.setItem(
                     r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
-                # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
+                self.proc_table.setItem(r, 4, self._tcell("—", numeric=True))
+                self._set_kill_button(r, p["pid"])
             return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
-        self.proc_table.setHorizontalHeaderLabels(
-            [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         if not procs:
             self._show_table_empty()
             return
@@ -771,12 +820,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             if p["kind"] == "hog":
                 label = "🔥 " + label
             self.proc_table.setItem(r, 0, self._tcell(label))
-            self.proc_table.setItem(r, 1, self._tcell(fa_digits(p["pid"]), numeric=True))
+            self.proc_table.setItem(r, 1, self._tcell("—", numeric=True))
+            self.proc_table.setItem(r, 2, self._tcell("—", numeric=True))
             self.proc_table.setItem(
-                r, 2, self._tcell(fa_digits(p["cpu"]) if p["cpu"] is not None else "—",
-                                  numeric=True))
-            self.proc_table.setItem(r, 3, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
-            # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
+                r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
+            self.proc_table.setItem(r, 4, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
+            self._set_kill_button(r, p["pid"])
         self.proc_table.resizeColumnsToContents()
 
     def _kill_one(self, pid):
@@ -1163,37 +1212,112 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.log(f"➖ {tr('log_safe_del')}")
 
     # ---------- تب تنظیمات ----------
+    def _set_section(self, parent_lay, key):
+        """سربرگ نئونی یک بخش از صفحه‌ی تنظیمات."""
+        h = QtWidgets.QLabel()
+        h.setObjectName("SecHead")
+        h.setProperty("tkey", key)
+        parent_lay.addWidget(h)
+        return h
+
     def _build_settings_tab(self):
         w = QtWidgets.QWidget()
-        lay = QtWidgets.QFormLayout(w)
+        outer = QtWidgets.QVBoxLayout(w)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        inner = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(inner)
+        lay.setSpacing(6)
+        self._set_heads = []
+
+        # — بخش سرور پینگ و بیت‌ریت —
+        self._set_heads.append(self._set_section(lay, "set_sec_net"))
+        form = QtWidgets.QFormLayout()
         self.lbl_server = QtWidgets.QLabel()
         self.server_edit = QtWidgets.QLineEdit(", ".join(self.cfg["servers"]))
         self.server_edit.setToolTip(tr("ping_server_hint"))
-        lay.addRow(self.lbl_server, self.server_edit)
-        self.ping_hint = QtWidgets.QLabel(tr("ping_server_hint"))
-        self.ping_hint.setObjectName("Sub")
-        self.ping_hint.setWordWrap(True)
-        lay.addRow(self.ping_hint)
+        form.addRow(self.lbl_server, self.server_edit)
         self.lbl_bitrate = QtWidgets.QLabel()
         self.bitrate_spin = QtWidgets.QDoubleSpinBox()
         self.bitrate_spin.setRange(1, 50)
         self.bitrate_spin.setSingleStep(0.5)
         self.bitrate_spin.setValue(float(self.cfg.get("bitrate_mbps", 8.0)))
-        lay.addRow(self.lbl_bitrate, self.bitrate_spin)
+        self.bitrate_spin.setSuffix(" Mbps")
+        self.bitrate_spin.setMinimumWidth(150)
+        self.bitrate_spin.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        form.addRow(self.lbl_bitrate, self.bitrate_spin)
+        lay.addLayout(form)
+        self.ping_hint = QtWidgets.QLabel(tr("ping_server_hint"))
+        self.ping_hint.setObjectName("Sub")
+        self.ping_hint.setWordWrap(True)
+        lay.addWidget(self.ping_hint)
+        self.btn_save = QtWidgets.QPushButton()
+        self.btn_save.clicked.connect(self._save_settings)
+        lay.addWidget(self.btn_save)
+        self.set_note = QtWidgets.QLabel()
+        self.set_note.setObjectName("Sub")
+        self.set_note.setWordWrap(True)
+        lay.addWidget(self.set_note)
+
+        # — بخش زبان —
+        self._set_heads.append(self._set_section(lay, "set_sec_lang"))
+        lrow = QtWidgets.QHBoxLayout()
         self.lbl_lang = QtWidgets.QLabel()
         self.lang_combo = QtWidgets.QComboBox()
         self.lang_combo.addItems(["فارسی", "English"])
         self.lang_combo.setCurrentIndex(0 if get_lang() == "fa" else 1)
         self.lang_combo.currentIndexChanged.connect(self._lang_combo_changed)
-        lay.addRow(self.lbl_lang, self.lang_combo)
-        self.btn_save = QtWidgets.QPushButton()
-        self.btn_save.clicked.connect(self._save_settings)
-        lay.addRow(self.btn_save)
-        self.set_note = QtWidgets.QLabel()
-        self.set_note.setObjectName("Sub")
-        self.set_note.setWordWrap(True)
-        lay.addRow(self.set_note)
+        lrow.addWidget(self.lbl_lang)
+        lrow.addWidget(self.lang_combo, 1)
+        lay.addLayout(lrow)
+
+        # — بخش پشتیبانی (تلگرام) —
+        self._set_heads.append(self._set_section(lay, "set_sec_contact"))
+        trow = QtWidgets.QHBoxLayout()
+        self.lbl_telegram = QtWidgets.QLabel()
+        self.tg_link = QtWidgets.QLabel(
+            '<a href="https://t.me/tha_arf" style="color:#00E5FF;">@tha_arf</a>')
+        self.tg_link.setOpenExternalLinks(True)
+        self.tg_link.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.btn_tg_copy = QtWidgets.QPushButton()
+        self.btn_tg_copy.clicked.connect(self._copy_telegram)
+        self.btn_tg_open = QtWidgets.QPushButton()
+        self.btn_tg_open.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl("https://t.me/tha_arf")))
+        trow.addWidget(self.lbl_telegram)
+        trow.addWidget(self.tg_link, 1)
+        trow.addWidget(self.btn_tg_copy)
+        trow.addWidget(self.btn_tg_open)
+        lay.addLayout(trow)
+
+        # — بخش راهنما —
+        self._set_heads.append(self._set_section(lay, "set_sec_help"))
+        self.btn_guide = QtWidgets.QPushButton()
+        self.btn_guide.clicked.connect(self.show_help)
+        lay.addWidget(self.btn_guide)
+
+        # — بخش درباره / لایسنس —
+        self._set_heads.append(self._set_section(lay, "set_sec_about"))
+        self.about_view = QtWidgets.QTextEdit()
+        self.about_view.setObjectName("About")
+        self.about_view.setReadOnly(True)
+        self.about_view.setPlainText(about_text())
+        self.about_view.setMinimumHeight(140)
+        lay.addWidget(self.about_view)
+
+        lay.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
         self.tabs.addTab(w, "")
+
+    def _copy_telegram(self):
+        QtWidgets.QApplication.clipboard().setText("@tha_arf")
+        self.btn_tg_copy.setText(tr("set_copied"))
+        QtCore.QTimer.singleShot(
+            1500, lambda: self.btn_tg_copy.setText(tr("set_copy")))
 
     def _lang_combo_changed(self, idx):
         new = "fa" if idx == 0 else "en"
@@ -1322,6 +1446,16 @@ def main():
     app.setStyleSheet(QSS)
     win = LagSliceWindow()
     win.show()
+
+    # --- موتور آپدیت: پنجره‌ی «به‌روزرسانی انجام شد» + بررسی پس‌زمینه ---
+    import updater
+    if updater.get_update_notice():
+        QtCore.QTimer.singleShot(
+            800, lambda: updater.show_update_done_dialog(win))
+    if getattr(sys, "frozen", False):
+        QtCore.QTimer.singleShot(
+            3000, lambda: updater.check_in_background(win))
+
     sys.exit(app.exec())
 
 
