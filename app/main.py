@@ -216,11 +216,12 @@ RED = "#FF4D5E"
 
 QSS = f"""
 QWidget {{ background-color: {BG}; color: {TEXT}; font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif; font-size: 13px; }}
-QLabel#Title {{ font-size: 22px; font-weight: bold; color: {CYAN}; }}
-QLabel#Sub {{ font-size: 12px; color: {MUTED}; }}
 QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
 QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
-QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
+QPushButton#Nav {{ background-color: transparent; border: 1px solid transparent;
+    border-radius: 8px; color: {MUTED}; padding: 8px 14px; font-weight: bold; }}
+QPushButton#Nav:hover {{ color: {TEXT}; border-color: {BORDER}; }}
+QPushButton#Nav:checked {{ background-color: #16202F; border-color: {CYAN}; color: {CYAN}; }}
 QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
     border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
 QLabel#SecHead {{ font-size: 15px; font-weight: bold; color: {CYAN};
@@ -237,7 +238,6 @@ QPushButton:disabled {{ border-color: #3A4356; color: #5B6577; background-color:
 QPushButton#Go {{ border-color: {GREEN}; font-size: 15px; padding: 14px; }}
 QPushButton#Stop {{ border-color: {RED}; font-size: 15px; padding: 14px; }}
 QPushButton#Danger {{ border-color: {MAGENTA}; }}
-QPushButton#Lang {{ border-color: {MAGENTA}; padding: 6px 14px; }}
 /* دکمه‌های بیرون جدول: پدینگ (داخل QTableWidget در RTL باگ دارد) */
 QDialog QPushButton, QTabWidget QPushButton {{ padding: 10px 18px; }}
 QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; }}
@@ -477,41 +477,28 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         root = QtWidgets.QVBoxLayout(central)
         root.setSpacing(10)
 
-        # --- سربرگ ---
+        # --- سربرگ: لوگو + دکمه‌های ناوبری صفحات ---
         head = QtWidgets.QHBoxLayout()
+        head.setSpacing(6)
         if os.path.exists(LOGO_PATH):
             logo = QtWidgets.QLabel()
-            pm = QtGui.QPixmap(LOGO_PATH).scaledToHeight(64, QtCore.Qt.TransformationMode.SmoothTransformation)
+            pm = QtGui.QPixmap(LOGO_PATH).scaledToHeight(56, QtCore.Qt.TransformationMode.SmoothTransformation)
             logo.setPixmap(pm)
             head.addWidget(logo)
-        tbox = QtWidgets.QVBoxLayout()
-        self.title_lbl = QtWidgets.QLabel("LagSlice ⚡")
-        self.title_lbl.setObjectName("Title")
-        self.sub_lbl = QtWidgets.QLabel()
-        self.sub_lbl.setObjectName("Sub")
-        tbox.addWidget(self.title_lbl)
-        tbox.addWidget(self.sub_lbl)
-        head.addLayout(tbox)
+        self._nav_btns = []
+        nav_group = QtWidgets.QButtonGroup(self)
+        nav_group.setExclusive(True)
+        for i, tkey in enumerate(("tab_procs", "tab_scan", "tab_safe",
+                                  "tab_settings", "tab_log")):
+            b = QtWidgets.QPushButton(tr(tkey))
+            b.setObjectName("Nav")
+            b.setCheckable(True)
+            b.setProperty("tkey", tkey)
+            b.clicked.connect(lambda _=False, idx=i: self.tabs.setCurrentIndex(idx))
+            nav_group.addButton(b, i)
+            head.addWidget(b)
+            self._nav_btns.append(b)
         head.addStretch(1)
-        self.btn_lang = QtWidgets.QPushButton()
-        self.btn_lang.setObjectName("Lang")
-        self.btn_lang.clicked.connect(self.toggle_lang)
-        head.addWidget(self.btn_lang)
-        self.btn_about = QtWidgets.QPushButton()
-        self.btn_about.setObjectName("Lang")
-        self.btn_about.clicked.connect(self.show_about)
-        head.addWidget(self.btn_about)
-        self.btn_update = QtWidgets.QPushButton()
-        self.btn_update.setObjectName("Lang")
-        self.btn_update.clicked.connect(self.show_update)
-        head.addWidget(self.btn_update)
-        self.btn_help = QtWidgets.QPushButton()
-        self.btn_help.setObjectName("Lang")
-        self.btn_help.clicked.connect(self.show_help)
-        head.addWidget(self.btn_help)
-        self.pill = QtWidgets.QLabel()
-        self.pill.setObjectName("Pill")
-        head.addWidget(self.pill)
         root.addLayout(head)
 
         self.warn_lbl = QtWidgets.QLabel()
@@ -544,8 +531,13 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._build_settings_tab()
         self._build_log_tab()
 
+        # تب‌بار پیش‌فرض مخفی؛ ناوبری از دکمه‌های هدر انجام می‌شود
+        self.tabs.tabBar().setVisible(False)
+        self.tabs.currentChanged.connect(self._sync_nav)
+        if self._nav_btns:
+            self._nav_btns[0].setChecked(True)
+
         self.apply_language()
-        self._refresh_pill()
         self._refresh_stream_btn()
 
         # --- مانیتور شبکه ---
@@ -582,11 +574,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         rtl = get_lang() == "fa"
         align = (QtCore.Qt.AlignmentFlag.AlignRight if rtl
                  else QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.sub_lbl.setText(tr("app_subtitle"))
-        self.btn_lang.setText("EN" if rtl else "فا")
-        self.btn_about.setText(tr("about_btn"))
-        self.btn_update.setText(tr("upd_btn"))
-        self.btn_help.setText(tr("help_btn"))
+        for b in self._nav_btns:
+            b.setText(tr(b.property("tkey")))
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
@@ -599,7 +588,6 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.safe_hint.setAlignment(align)
         self.set_note.setAlignment(align)
         self.ping_hint.setAlignment(align)
-        self._refresh_pill()
         self._refresh_stream_btn()
         self.tabs.setTabText(0, tr("tab_procs"))
         self.tabs.setTabText(1, tr("tab_scan"))
@@ -624,6 +612,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_tg_copy.setText(tr("set_copy"))
         self.btn_tg_open.setText(tr("set_telegram_open"))
         self.btn_guide.setText(tr("set_open_guide"))
+        self.btn_update_check.setText(tr("upd_btn"))
         self._retranslate_scan()
         self._update_delay_card()
         self.refresh_procs()
@@ -632,17 +621,17 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         AboutDialog(self).exec()
 
     def show_update(self):
-        """بررسی دستی آپدیت از دکمه‌ی سربرگ."""
+        """بررسی دستی آپدیت از بخش تنظیمات."""
         import updater
         from PyQt6.QtWidgets import QMessageBox
-        self.btn_update.setText(tr("upd_checking"))
-        self.btn_update.setEnabled(False)
+        self.btn_update_check.setText(tr("upd_checking"))
+        self.btn_update_check.setEnabled(False)
         try:
             has, info = updater.check_for_update()
         except Exception:
             has, info = False, "خطا در بررسی آپدیت."
-        self.btn_update.setText(tr("upd_btn"))
-        self.btn_update.setEnabled(True)
+        self.btn_update_check.setText(tr("upd_btn"))
+        self.btn_update_check.setEnabled(True)
         if has and isinstance(info, dict):
             updater.show_update_available_dialog(self, info)
         elif isinstance(info, str) and info:
@@ -662,23 +651,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))
 
-    def _refresh_pill(self):
-        if self.streaming:
-            self.pill.setText(tr("status_streaming"))
-            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
-        else:
-            self.pill.setText(tr("status_ready"))
-            self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
-        # انیمیشن نرم تغییر وضعیت
-        eff = QtWidgets.QGraphicsOpacityEffect(self.pill)
-        self.pill.setGraphicsEffect(eff)
-        anim = QtCore.QPropertyAnimation(eff, b"opacity", self)
-        anim.setDuration(350)
-        anim.setStartValue(0.25)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QtCore.QEasingCurve.Type.OutCubic)
-        anim.start()
-        self._pill_anim = anim
+    def _sync_nav(self, idx):
+        """سینک دکمه‌ی فعال ناوبری با تب جاری."""
+        if 0 <= idx < len(self._nav_btns):
+            self._nav_btns[idx].setChecked(True)
 
     def _refresh_stream_btn(self):
         if self.streaming:
@@ -1308,6 +1284,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.about_view.setMinimumHeight(140)
         lay.addWidget(self.about_view)
 
+        # — بخش به‌روزرسانی —
+        self._set_heads.append(self._set_section(lay, "set_sec_update"))
+        self.btn_update_check = QtWidgets.QPushButton()
+        self.btn_update_check.clicked.connect(self.show_update)
+        lay.addWidget(self.btn_update_check)
+
         lay.addStretch(1)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
@@ -1406,11 +1388,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 self.log(tr("log_nothing"))
             self.streaming = True
             self._refresh_stream_btn()
-            self._refresh_pill()
         else:
             self.streaming = False
             self._refresh_stream_btn()
-            self._refresh_pill()
             self.log(tr("log_stream_off"))
 
     @staticmethod
