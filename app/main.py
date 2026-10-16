@@ -222,6 +222,10 @@ QTableWidget::item {{ padding: 4px; }}
 QHeaderView::section {{ background-color: #141C2B; color: {MUTED}; border: none; padding: 6px; }}
 QListWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
 QLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button {{
+    subcontrol-origin: border; width: 24px; border: none; background: transparent; }}
+QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
+QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background-color: #1B2940; }}
 QTextEdit#Log {{ background-color: #080B11; border: 1px solid {BORDER}; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; }}
 QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radius: 8px; padding: 8px 12px; color: {AMBER}; }}
 """
@@ -1179,6 +1183,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.bitrate_spin.setRange(1, 50)
         self.bitrate_spin.setSingleStep(0.5)
         self.bitrate_spin.setValue(float(self.cfg.get("bitrate_mbps", 8.0)))
+        self.bitrate_spin.setSuffix(" Mbps")
+        self.bitrate_spin.setMinimumWidth(150)
+        self.bitrate_spin.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         lay.addRow(self.lbl_bitrate, self.bitrate_spin)
         self.lbl_lang = QtWidgets.QLabel()
         self.lang_combo = QtWidgets.QComboBox()
