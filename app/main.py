@@ -17,6 +17,33 @@ import threading
 import time
 import traceback
 
+# کلید عیب‌یابی کرش شماره‌ی ۲: با LAGSLICE_NO_PSUTIL=1 کل ماژول psutil
+# با یک نسخه‌ی تقلبی جایگزین می‌شود (شبکه صفر، لیست پروسس خالی).
+# باید قبل از هر import دیگری باشد تا همه‌ی ماژول‌ها همان را بگیرند.
+if os.environ.get("LAGSLICE_NO_PSUTIL", "") == "1":
+    import types
+
+    _psutil_fake = types.ModuleType("psutil")
+
+    def _fake_net_io_counters():
+        return types.SimpleNamespace(bytes_sent=0, bytes_recv=0,
+                                     packets_sent=0, packets_recv=0,
+                                     errin=0, errout=0, dropin=0, dropout=0)
+
+    _psutil_fake.net_io_counters = _fake_net_io_counters
+    _psutil_fake.process_iter = lambda *a, **k: iter(())
+
+    class _FakeProcess:
+        def __init__(self, *a, **k):
+            raise RuntimeError("psutil disabled (LAGSLICE_NO_PSUTIL=1)")
+
+    _psutil_fake.Process = _FakeProcess
+    for _exc_name in ("NoSuchProcess", "AccessDenied", "TimeoutExpired",
+                      "ZombieProcess"):
+        setattr(_psutil_fake, _exc_name, type(_exc_name, (Exception,), {}))
+    sys.modules["psutil"] = _psutil_fake
+    del _psutil_fake
+
 
 def _crash_log_path():
     """مسیر فایل لاگ کرش: کنار exe، وگرنه APPDATA، وگرنه temp."""
@@ -101,14 +128,18 @@ def _enable_faulthandler():
 
 _enable_faulthandler()
 
-# علامت عیب‌یابی: اگر EStats با متغیر محیطی خاموش شده، در لاگ ثبت شود
+# علامت عیب‌یابی: اگر EStats/psutil با متغیر محیطی خاموش شده، در لاگ ثبت شود
 # تا موقع بررسی کرش معلوم باشد برنامه در کدام حالت اجرا شده است.
-if os.environ.get("LAGSLICE_NO_ESTATS", "") == "1":
-    try:
-        with open(_crash_log_path(), "a", encoding="utf-8") as _df:
-            _df.write("LAGSLICE_NO_ESTATS=1: EStats disabled for crash diagnosis\n")
-    except Exception:
-        pass
+for _diag_key, _diag_msg in (
+        ("LAGSLICE_NO_ESTATS", "EStats disabled for crash diagnosis"),
+        ("LAGSLICE_NO_PSUTIL", "psutil disabled for crash diagnosis")):
+    if os.environ.get(_diag_key, "") == "1":
+        try:
+            with open(_crash_log_path(), "a", encoding="utf-8") as _df:
+                _df.write(f"{_diag_key}=1: {_diag_msg}\n")
+        except Exception:
+            pass
+del _diag_key, _diag_msg
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
