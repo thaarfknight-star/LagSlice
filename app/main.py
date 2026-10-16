@@ -572,8 +572,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.tabs.setTabText(3, tr("tab_settings"))
         self.tabs.setTabText(4, tr("tab_log"))
         self.proc_hint.setText(tr("procs_hint"))
-        self.proc_table.setHorizontalHeaderLabels(
-            [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         self.safe_hint.setText(tr("safe_hint"))
         self.btn_safe_pick.setText(tr("safe_pick_btn"))
         self.btn_safe_del.setText(tr("safe_del"))
@@ -625,6 +624,16 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_stream.setStyleSheet("")
 
     # ---------- تب برنامه‌ها ----------
+    # هدر ثابت جدول برنامه‌ها — در هر دو حالت (آمار شبکه / حالت عادی) و
+    # هنگام تعویض زبان همیشه یکی است، تا چیدمان RTL/LTR نپرد.
+    # ستون CPU حذف شد: از 0.2.4 داده‌اش همیشه «—» است (psutil کرش native می‌داد).
+    PROC_COLUMNS = ("col_app", "col_up", "col_down", "col_pid", "col_ram", "")
+    _KILL_COL = len(PROC_COLUMNS) - 1  # ستون دکمه‌ی بستن
+
+    def _proc_headers(self):
+        """هدرهای جدول برنامه‌ها — همیشه ثابت."""
+        return [tr(k) if k else "" for k in self.PROC_COLUMNS]
+
     def _build_proc_tab(self):
         w = QtWidgets.QWidget()
         lay = QtWidgets.QVBoxLayout(w)
@@ -632,15 +641,15 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_hint.setObjectName("Sub")
         self.proc_hint.setWordWrap(True)
         lay.addWidget(self.proc_hint)
-        self.proc_table = QtWidgets.QTableWidget(0, 5)
+        self.proc_table = QtWidgets.QTableWidget(0, len(self.PROC_COLUMNS))
         self.proc_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         self.proc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.proc_table.verticalHeader().setVisible(False)
-        self._kill_btn_pool = []
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         # ستون نام برنامه کش می‌آید تا جدول تمام‌عرض شود (راست‌چین)
         hh = self.proc_table.horizontalHeader()
         hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for i in range(1, 5):
+        for i in range(1, len(self.PROC_COLUMNS)):
             hh.setSectionResizeMode(i, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         lay.addWidget(self.proc_table)
         self.tabs.addTab(w, "")
@@ -658,39 +667,31 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 | QtCore.Qt.AlignmentFlag.AlignVCenter)
         return it
 
-    def _pool_button(self, r):
-        """دکمه‌ی pool برای سطر r — اگر حذف شده بود، از نو ساخته می‌شود."""
-        btn = None
-        if r < len(self._kill_btn_pool):
-            cand = self._kill_btn_pool[r]
-            if cand is not None:
-                try:
-                    cand.setText(cand.text())  # تست زنده‌بودن
-                    btn = cand
-                except RuntimeError:
-                    btn = None
-        if btn is None:
-            btn = QtWidgets.QPushButton()
-            btn.setObjectName("Danger")
-            if r < len(self._kill_btn_pool):
-                self._kill_btn_pool[r] = btn
-            else:
-                while len(self._kill_btn_pool) < r:
-                    self._kill_btn_pool.append(None)
-                self._kill_btn_pool.append(btn)
-        return btn
+    def _clear_kill_buttons(self):
+        """حذف امن دکمه‌های kill سطرها: جدا کردن از سلول + deleteLater.
+        هر رفرش دکمه‌های تازه ساخته می‌شوند؛ هیچ ویجتی بین سلول‌ها
+        reuse نمی‌شود (reuse عامل کرش 0xc0000409 در Qt بود)."""
+        t = self.proc_table
+        for r in range(t.rowCount()):
+            try:
+                w = t.cellWidget(r, self._KILL_COL)
+            except RuntimeError:
+                continue
+            if w is None:
+                continue
+            t.removeCellWidget(r, self._KILL_COL)
+            try:
+                w.deleteLater()
+            except RuntimeError:
+                pass
 
     def _set_kill_button(self, r, pid):
-        """دکمه‌ی بستن سطر r — استفاده‌ی مجدد از pool تا ویجت‌ها نشت نکنند."""
-        btn = self._pool_button(r)
+        """دکمه‌ی بستن سطر r — همیشه یک دکمه‌ی تازه ساخته می‌شود، هرگز reuse نه."""
+        btn = QtWidgets.QPushButton()
+        btn.setObjectName("Danger")
         btn.setText(tr("btn_kill"))
-        try:
-            btn.clicked.disconnect()
-        except (TypeError, RuntimeError):
-            pass
         btn.clicked.connect(lambda _=False, pid=pid: self._kill_one(pid))
-        self.proc_table.setCellWidget(r, 4, btn)
-        btn.setVisible(True)
+        self.proc_table.setCellWidget(r, self._KILL_COL, btn)
 
     def _show_table_empty(self):
         """حالت خالیِ گویا: به‌جای جدول خالی، یک سطر پیام."""
@@ -702,26 +703,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         t.setItem(0, 0, msg)
         t.setSpan(0, 0, 1, t.columnCount())
 
-    # تشخیص کرش 0.2.5: دکمه‌های kill جدول موقتاً حذف شدند.
-    _NO_KILL_BUTTONS = True
-
     def refresh_procs(self):
-        # جدا کردن دکمه‌های pool از سلول‌های قدیمی برای استفاده‌ی مجدد
+        # پاک‌سازی امن دکمه‌های قبلی (بدون reuse) + هدر ثابت
         self.proc_table.clearSpans()
-        for r in range(self.proc_table.rowCount()):
-            try:
-                w = self.proc_table.cellWidget(r, 4)
-                if w is None:
-                    continue
-                w.isVisible()  # تست زنده‌بودن
-            except RuntimeError:
-                continue
-            if w in self._kill_btn_pool:
-                self.proc_table.removeCellWidget(r, 4)
-                try:
-                    w.setVisible(False)
-                except RuntimeError:
-                    pass
+        self._clear_kill_buttons()
+        self.proc_table.setHorizontalHeaderLabels(self._proc_headers())
         per_proc = (getattr(self, "_last_stats", None) or {}).get("per_proc") or {}
         if per_proc:
             # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
@@ -740,8 +726,6 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     "fa": tr(hog_key) if kind == "hog" and tr(hog_key) != hog_key else "",
                 })
             rows.sort(key=lambda x: x["up"], reverse=True)
-            self.proc_table.setHorizontalHeaderLabels(
-                [tr("col_app"), tr("col_up"), tr("col_down"), tr("col_pid"), ""])
             if not rows:
                 self._show_table_empty()
                 return
@@ -757,11 +741,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 2, self._tcell(fa_digits(_fmt_rate(p["down"])), numeric=True))
                 self.proc_table.setItem(
                     r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
-                # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
+                self.proc_table.setItem(r, 4, self._tcell("—", numeric=True))
+                self._set_kill_button(r, p["pid"])
             return
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
-        self.proc_table.setHorizontalHeaderLabels(
-            [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         if not procs:
             self._show_table_empty()
             return
@@ -771,12 +754,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             if p["kind"] == "hog":
                 label = "🔥 " + label
             self.proc_table.setItem(r, 0, self._tcell(label))
-            self.proc_table.setItem(r, 1, self._tcell(fa_digits(p["pid"]), numeric=True))
+            self.proc_table.setItem(r, 1, self._tcell("—", numeric=True))
+            self.proc_table.setItem(r, 2, self._tcell("—", numeric=True))
             self.proc_table.setItem(
-                r, 2, self._tcell(fa_digits(p["cpu"]) if p["cpu"] is not None else "—",
-                                  numeric=True))
-            self.proc_table.setItem(r, 3, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
-            # self._set_kill_button(r, p["pid"])  # تشخیص 0.2.5
+                r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
+            self.proc_table.setItem(r, 4, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
+            self._set_kill_button(r, p["pid"])
         self.proc_table.resizeColumnsToContents()
 
     def _kill_one(self, pid):
