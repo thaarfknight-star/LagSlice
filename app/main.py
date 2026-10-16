@@ -908,6 +908,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_srv_import.clicked.connect(self._scan_import)
         self.btn_srv_copy = QtWidgets.QPushButton()
         self.btn_srv_copy.clicked.connect(self._scan_copy_rtmp)
+        # مثل StreamScanner: تا اسکن موفق تمام نشود غیرفعال
+        self.btn_srv_copy.setEnabled(False)
         mrow.addWidget(self.btn_srv_add)
         mrow.addWidget(self.btn_srv_edit)
         mrow.addWidget(self.btn_srv_del)
@@ -1008,6 +1010,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.scan_table.setRowCount(0)
             self.scan_hint.setText(tr("scan_no_servers_hint"))
             self.scan_best.setVisible(False)
+            self.btn_srv_copy.setEnabled(False)
             return
         self.scan_hint.setText(tr("scan_hint"))
         rows = []
@@ -1032,6 +1035,17 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         s, r = best
         url = server_rtmp_url(s)
         txt = f"{tr('scan_best')}: {s.get('name')}"
+        # جزئیات بهترین سرور مثل StreamScanner: پینگ، لاست، TCP
+        det = []
+        if r.get("ping_ms") is not None:
+            det.append(f"{tr('scan_col_ping')} {fa_digits(round(r['ping_ms']))}ms")
+        if r.get("loss") is not None:
+            det.append(f"{tr('scan_col_loss')} {fa_digits(round(r['loss']))}%")
+        if r.get("tcp_ms") is not None:
+            det.append(f"{tr('scan_col_tcp')} {fa_digits(round(r['tcp_ms']))}ms")
+        if det:
+            sep = "، " if get_lang() == "fa" else ", "
+            txt += " — " + sep.join(det)
         if url:
             txt += f" — {url}"
         self.scan_best.setText(txt)
@@ -1066,6 +1080,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_scan_all.setEnabled(False)
         self.btn_scan_one.setEnabled(False)
         self.btn_scan_stop.setEnabled(True)
+        self.btn_srv_copy.setEnabled(False)
         self.scan_lbl.setText(tr("scan_scanning"))
         self._scan_thread = ScanThread(servers, parent=self)
         self._scan_thread.progress.connect(self._on_scan_progress)
@@ -1102,6 +1117,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, tr("tab_scan"), tr("scan_none_up"))
         else:
             self.log(f"⚡ {len(ups)} {tr('scan_up')}")
+            # مثل StreamScanner: دکمه‌ی کپی بعد از اسکن موفق فعال می‌شود
+            self.btn_srv_copy.setEnabled(True)
+            # بهترین سرور (ردیف اول جدول = بهترین امتیاز) خودکار انتخاب می‌شود
+            if self.scan_table.rowCount() > 0:
+                self.scan_table.selectRow(0)
+                self.scan_table.scrollToItem(
+                    self.scan_table.item(0, 0),
+                    QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible)
 
     def _scan_stop(self):
         if self._scan_thread is not None:
