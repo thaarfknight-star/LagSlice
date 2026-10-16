@@ -237,6 +237,17 @@ STRINGS = {
         "en": "Ping uses the first server in the list. Set bitrate to match your MeldStudio settings.",
     },
     "lang_label": {"fa": "زبان / Language:", "en": "Language / زبان:"},
+    # ---- صفحه‌ی تنظیمات (بخش‌های جدید) ----
+    "set_sec_net": {"fa": "🌐 سرور پینگ و بیت‌ریت", "en": "🌐 Ping servers & bitrate"},
+    "set_sec_lang": {"fa": "🌍 زبان برنامه", "en": "🌍 App language"},
+    "set_sec_contact": {"fa": "💬 پشتیبانی", "en": "💬 Support"},
+    "set_sec_help": {"fa": "📖 راهنما", "en": "📖 Guide"},
+    "set_sec_about": {"fa": "ℹ درباره / لایسنس", "en": "ℹ About / License"},
+    "set_telegram": {"fa": "تلگرام:", "en": "Telegram:"},
+    "set_telegram_open": {"fa": "باز کردن در تلگرام", "en": "Open in Telegram"},
+    "set_copy": {"fa": "📋 کپی", "en": "📋 Copy"},
+    "set_copied": {"fa": "کپی شد ✓", "en": "Copied ✓"},
+    "set_open_guide": {"fa": "باز کردن فایل راهنما", "en": "Open guide file"},
     "about_btn": {"fa": "ℹ درباره", "en": "ℹ About"},
     "about_title": {"fa": "درباره‌ی LagSlice", "en": "About LagSlice"},
     # ---- لاگ ----

@@ -201,6 +201,10 @@ QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
 QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
 QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
     border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
+QLabel#SecHead {{ font-size: 15px; font-weight: bold; color: {CYAN};
+    border-bottom: 1px solid {BORDER}; padding: 8px 2px 6px 2px; margin-top: 6px; }}
+QTextEdit#About {{ background-color: {CARD}; border: 1px solid {BORDER};
+    border-radius: 8px; padding: 8px; font-size: 12px; color: {MUTED}; }}
 QProgressBar {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
     text-align: center; color: {MUTED}; }}
 QProgressBar::chunk {{ background-color: {CYAN}; border-radius: 6px; }}
@@ -583,6 +587,13 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
+        for h in getattr(self, "_set_heads", []):
+            h.setText(tr(h.property("tkey")))
+            h.setAlignment(align)
+        self.lbl_telegram.setText(tr("set_telegram"))
+        self.btn_tg_copy.setText(tr("set_copy"))
+        self.btn_tg_open.setText(tr("set_telegram_open"))
+        self.btn_guide.setText(tr("set_open_guide"))
         self._retranslate_scan()
         self._update_delay_card()
         self.refresh_procs()
@@ -1163,37 +1174,109 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.log(f"➖ {tr('log_safe_del')}")
 
     # ---------- تب تنظیمات ----------
+    def _set_section(self, parent_lay, key):
+        """سربرگ نئونی یک بخش از صفحه‌ی تنظیمات."""
+        h = QtWidgets.QLabel()
+        h.setObjectName("SecHead")
+        h.setProperty("tkey", key)
+        parent_lay.addWidget(h)
+        return h
+
     def _build_settings_tab(self):
         w = QtWidgets.QWidget()
-        lay = QtWidgets.QFormLayout(w)
+        outer = QtWidgets.QVBoxLayout(w)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        inner = QtWidgets.QWidget()
+        lay = QtWidgets.QVBoxLayout(inner)
+        lay.setSpacing(6)
+        self._set_heads = []
+
+        # — بخش سرور پینگ و بیت‌ریت —
+        self._set_heads.append(self._set_section(lay, "set_sec_net"))
+        form = QtWidgets.QFormLayout()
         self.lbl_server = QtWidgets.QLabel()
         self.server_edit = QtWidgets.QLineEdit(", ".join(self.cfg["servers"]))
         self.server_edit.setToolTip(tr("ping_server_hint"))
-        lay.addRow(self.lbl_server, self.server_edit)
-        self.ping_hint = QtWidgets.QLabel(tr("ping_server_hint"))
-        self.ping_hint.setObjectName("Sub")
-        self.ping_hint.setWordWrap(True)
-        lay.addRow(self.ping_hint)
+        form.addRow(self.lbl_server, self.server_edit)
         self.lbl_bitrate = QtWidgets.QLabel()
         self.bitrate_spin = QtWidgets.QDoubleSpinBox()
         self.bitrate_spin.setRange(1, 50)
         self.bitrate_spin.setSingleStep(0.5)
         self.bitrate_spin.setValue(float(self.cfg.get("bitrate_mbps", 8.0)))
-        lay.addRow(self.lbl_bitrate, self.bitrate_spin)
+        form.addRow(self.lbl_bitrate, self.bitrate_spin)
+        lay.addLayout(form)
+        self.ping_hint = QtWidgets.QLabel(tr("ping_server_hint"))
+        self.ping_hint.setObjectName("Sub")
+        self.ping_hint.setWordWrap(True)
+        lay.addWidget(self.ping_hint)
+        self.btn_save = QtWidgets.QPushButton()
+        self.btn_save.clicked.connect(self._save_settings)
+        lay.addWidget(self.btn_save)
+        self.set_note = QtWidgets.QLabel()
+        self.set_note.setObjectName("Sub")
+        self.set_note.setWordWrap(True)
+        lay.addWidget(self.set_note)
+
+        # — بخش زبان —
+        self._set_heads.append(self._set_section(lay, "set_sec_lang"))
+        lrow = QtWidgets.QHBoxLayout()
         self.lbl_lang = QtWidgets.QLabel()
         self.lang_combo = QtWidgets.QComboBox()
         self.lang_combo.addItems(["فارسی", "English"])
         self.lang_combo.setCurrentIndex(0 if get_lang() == "fa" else 1)
         self.lang_combo.currentIndexChanged.connect(self._lang_combo_changed)
-        lay.addRow(self.lbl_lang, self.lang_combo)
-        self.btn_save = QtWidgets.QPushButton()
-        self.btn_save.clicked.connect(self._save_settings)
-        lay.addRow(self.btn_save)
-        self.set_note = QtWidgets.QLabel()
-        self.set_note.setObjectName("Sub")
-        self.set_note.setWordWrap(True)
-        lay.addRow(self.set_note)
+        lrow.addWidget(self.lbl_lang)
+        lrow.addWidget(self.lang_combo, 1)
+        lay.addLayout(lrow)
+
+        # — بخش پشتیبانی (تلگرام) —
+        self._set_heads.append(self._set_section(lay, "set_sec_contact"))
+        trow = QtWidgets.QHBoxLayout()
+        self.lbl_telegram = QtWidgets.QLabel()
+        self.tg_link = QtWidgets.QLabel(
+            '<a href="https://t.me/tha_arf" style="color:#00E5FF;">@tha_arf</a>')
+        self.tg_link.setOpenExternalLinks(True)
+        self.tg_link.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
+        self.btn_tg_copy = QtWidgets.QPushButton()
+        self.btn_tg_copy.clicked.connect(self._copy_telegram)
+        self.btn_tg_open = QtWidgets.QPushButton()
+        self.btn_tg_open.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl("https://t.me/tha_arf")))
+        trow.addWidget(self.lbl_telegram)
+        trow.addWidget(self.tg_link, 1)
+        trow.addWidget(self.btn_tg_copy)
+        trow.addWidget(self.btn_tg_open)
+        lay.addLayout(trow)
+
+        # — بخش راهنما —
+        self._set_heads.append(self._set_section(lay, "set_sec_help"))
+        self.btn_guide = QtWidgets.QPushButton()
+        self.btn_guide.clicked.connect(self.show_help)
+        lay.addWidget(self.btn_guide)
+
+        # — بخش درباره / لایسنس —
+        self._set_heads.append(self._set_section(lay, "set_sec_about"))
+        self.about_view = QtWidgets.QTextEdit()
+        self.about_view.setObjectName("About")
+        self.about_view.setReadOnly(True)
+        self.about_view.setPlainText(about_text())
+        self.about_view.setMinimumHeight(140)
+        lay.addWidget(self.about_view)
+
+        lay.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
         self.tabs.addTab(w, "")
+
+    def _copy_telegram(self):
+        QtWidgets.QApplication.clipboard().setText("@tha_arf")
+        self.btn_tg_copy.setText(tr("set_copied"))
+        QtCore.QTimer.singleShot(
+            1500, lambda: self.btn_tg_copy.setText(tr("set_copy")))
 
     def _lang_combo_changed(self, idx):
         new = "fa" if idx == 0 else "en"
