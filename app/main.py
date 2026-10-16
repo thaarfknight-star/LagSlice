@@ -258,7 +258,8 @@ QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radi
 
 
 def load_config():
-    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa"}
+    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa",
+           "ping_enabled": True}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -547,6 +548,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.apply_language()
         self._refresh_pill()
         self._refresh_stream_btn()
+        self._apply_ping_visibility()
 
         # --- مانیتور شبکه ---
         self.netmon = NetMonitor(self._servers, self)
@@ -614,15 +616,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.lbl_server.setText(tr("set_server"))
         self.server_edit.setPlaceholderText(tr("set_server_ph"))
         self.lbl_bitrate.setText(tr("set_bitrate"))
+        self.ping_check.setText(tr("set_ping_toggle"))
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
         for h in getattr(self, "_set_heads", []):
             h.setText(tr(h.property("tkey")))
             h.setAlignment(align)
-        self.lbl_telegram.setText(tr("set_telegram"))
-        self.btn_tg_copy.setText(tr("set_copy"))
-        self.btn_tg_open.setText(tr("set_telegram_open"))
+        self.btn_telegram.setText(tr("set_telegram_btn"))
         self.btn_guide.setText(tr("set_open_guide"))
         self._retranslate_scan()
         self._update_delay_card()
@@ -1252,6 +1253,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.ping_hint.setObjectName("Sub")
         self.ping_hint.setWordWrap(True)
         lay.addWidget(self.ping_hint)
+        self.ping_check = QtWidgets.QCheckBox()
+        self.ping_check.setChecked(bool(self.cfg.get("ping_enabled", True)))
+        self.ping_check.setToolTip(tr("ping_server_hint"))
+        lay.addWidget(self.ping_check)
         self.btn_save = QtWidgets.QPushButton()
         self.btn_save.clicked.connect(self._save_settings)
         lay.addWidget(self.btn_save)
@@ -1274,24 +1279,11 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
         # — بخش پشتیبانی (تلگرام) —
         self._set_heads.append(self._set_section(lay, "set_sec_contact"))
-        trow = QtWidgets.QHBoxLayout()
-        self.lbl_telegram = QtWidgets.QLabel()
-        self.tg_link = QtWidgets.QLabel(
-            '<a href="https://t.me/tha_arf" style="color:#00E5FF;">@tha_arf</a>')
-        self.tg_link.setOpenExternalLinks(True)
-        self.tg_link.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.btn_tg_copy = QtWidgets.QPushButton()
-        self.btn_tg_copy.clicked.connect(self._copy_telegram)
-        self.btn_tg_open = QtWidgets.QPushButton()
-        self.btn_tg_open.clicked.connect(
+        self.btn_telegram = QtWidgets.QPushButton()
+        self.btn_telegram.clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(
                 QtCore.QUrl("https://t.me/tha_arf")))
-        trow.addWidget(self.lbl_telegram)
-        trow.addWidget(self.tg_link, 1)
-        trow.addWidget(self.btn_tg_copy)
-        trow.addWidget(self.btn_tg_open)
-        lay.addLayout(trow)
+        lay.addWidget(self.btn_telegram)
 
         # — بخش راهنما —
         self._set_heads.append(self._set_section(lay, "set_sec_help"))
@@ -1313,12 +1305,6 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         outer.addWidget(scroll)
         self.tabs.addTab(w, "")
 
-    def _copy_telegram(self):
-        QtWidgets.QApplication.clipboard().setText("@tha_arf")
-        self.btn_tg_copy.setText(tr("set_copied"))
-        QtCore.QTimer.singleShot(
-            1500, lambda: self.btn_tg_copy.setText(tr("set_copy")))
-
     def _lang_combo_changed(self, idx):
         new = "fa" if idx == 0 else "en"
         if new != get_lang():
@@ -1329,10 +1315,18 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         servers = [s.strip() for s in self.server_edit.text().split(",") if s.strip()]
         self.cfg["servers"] = servers or ["8.8.8.8"]
         self.cfg["bitrate_mbps"] = float(self.bitrate_spin.value())
+        self.cfg["ping_enabled"] = bool(self.ping_check.isChecked())
         save_config(self.cfg)
+        self._apply_ping_visibility()
         self.log(tr("log_settings_saved"))
 
+    def _apply_ping_visibility(self):
+        """نمایش/مخفی‌سازی کارت پینگ بر اساس تاگل تنظیمات."""
+        self.card_ping.setVisible(bool(self.cfg.get("ping_enabled", True)))
+
     def _servers(self):
+        if not self.cfg.get("ping_enabled", True):
+            return []
         return self.cfg.get("servers", ["8.8.8.8"])
 
     # ---------- تب لاگ ----------

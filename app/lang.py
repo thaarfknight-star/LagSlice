@@ -244,6 +244,8 @@ STRINGS = {
     "set_sec_help": {"fa": "📖 راهنما", "en": "📖 Guide"},
     "set_sec_about": {"fa": "ℹ درباره / لایسنس", "en": "ℹ About / License"},
     "set_telegram": {"fa": "تلگرام:", "en": "Telegram:"},
+    "set_telegram_btn": {"fa": "باز کردن در تلگرام @tha_arf", "en": "Open in Telegram @tha_arf"},
+    "set_ping_toggle": {"fa": "📡 پینگ سرور", "en": "📡 Server ping"},
     "set_telegram_open": {"fa": "باز کردن در تلگرام", "en": "Open in Telegram"},
     "set_copy": {"fa": "📋 کپی", "en": "📋 Copy"},
     "set_copied": {"fa": "کپی شد ✓", "en": "Copied ✓"},
