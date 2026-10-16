@@ -203,62 +203,15 @@ def about_text():
             continue
     return "LagSlice ⚡ — " + tr("app_subtitle") + "\nCopyright (C) 2026 Taha Arefi\nAGPL-3.0-only"
 
-CYAN = "#00E5FF"
-MAGENTA = "#FF00D4"
-BG = "#0B0F17"
-CARD = "#101724"
-BORDER = "#1E2A3D"
-TEXT = "#E8EDF5"
-MUTED = "#9AA4B5"
-GREEN = "#22E584"
-AMBER = "#FFB020"
-RED = "#FF4D5E"
+from themes import build_qss, theme_keys, theme_label, theme_colors, DEFAULT_THEME
 
-QSS = f"""
-QWidget {{ background-color: {BG}; color: {TEXT}; font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif; font-size: 13px; }}
-QLabel#Title {{ font-size: 22px; font-weight: bold; color: {CYAN}; }}
-QLabel#Sub {{ font-size: 12px; color: {MUTED}; }}
-QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
-QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
-QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
-QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
-    border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
-QLabel#SecHead {{ font-size: 15px; font-weight: bold; color: {CYAN};
-    border-bottom: 1px solid {BORDER}; padding: 8px 2px 6px 2px; margin-top: 6px; }}
-QTextEdit#About {{ background-color: {CARD}; border: 1px solid {BORDER};
-    border-radius: 8px; padding: 8px; font-size: 12px; color: {MUTED}; }}
-QProgressBar {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
-    text-align: center; color: {MUTED}; }}
-QProgressBar::chunk {{ background-color: {CYAN}; border-radius: 6px; }}
-QFrame#Card {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
-QPushButton {{ background-color: #16202F; border: 1px solid {CYAN}; border-radius: 10px; color: {TEXT}; font-weight: bold; }}
-QPushButton:hover {{ background-color: #1B2940; }}
-QPushButton:disabled {{ border-color: #3A4356; color: #5B6577; background-color: #121826; }}
-QPushButton#Go {{ border-color: {GREEN}; font-size: 15px; padding: 14px; }}
-QPushButton#Stop {{ border-color: {RED}; font-size: 15px; padding: 14px; }}
-QPushButton#Danger {{ border-color: {MAGENTA}; }}
-QPushButton#Lang {{ border-color: {MAGENTA}; padding: 6px 14px; }}
-/* دکمه‌های بیرون جدول: پدینگ (داخل QTableWidget در RTL باگ دارد) */
-QDialog QPushButton, QTabWidget QPushButton {{ padding: 10px 18px; }}
-QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; }}
-QTabBar::tab {{ background: {CARD}; color: {MUTED}; padding: 8px 18px; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
-QTabBar::tab:selected {{ color: {CYAN}; border-bottom: 2px solid {CYAN}; }}
-QTableWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; gridline-color: {BORDER}; }}
-QTableWidget::item {{ padding: 4px; }}
-QHeaderView::section {{ background-color: #141C2B; color: {MUTED}; border: none; padding: 6px; }}
-QListWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
-QLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button {{
-    subcontrol-origin: border; width: 24px; border: none; background: transparent; }}
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background-color: #1B2940; }}
-QTextEdit#Log {{ background-color: #080B11; border: 1px solid {BORDER}; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; }}
-QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radius: 8px; padding: 8px 12px; color: {AMBER}; }}
-"""
+# تم پیش‌فرض؛ QSS واقعی در main() از روی کانفیگ ساخته می‌شود
+QSS = build_qss(DEFAULT_THEME)
 
 
 def load_config():
-    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa"}
+    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa",
+           "theme": DEFAULT_THEME, "tray": False}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -268,6 +221,8 @@ def load_config():
         pass
     if cfg.get("lang") not in ("fa", "en"):
         cfg["lang"] = "fa"
+    if cfg.get("theme") not in theme_keys():
+        cfg["theme"] = DEFAULT_THEME
     return cfg
 
 
@@ -468,6 +423,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._scan_thread = None
         self._scanning = False
         self._scan_results = {}
+        self._tray = None
+        self._tray_act_show = None
+        self._tray_act_quit = None
+        self._force_quit = False
 
         self.setWindowTitle(f"LagSlice ⚡ (v{__version__})")
         self.resize(980, 700)
@@ -558,7 +517,48 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_timer.start(5000)
         self.refresh_procs()
 
+        # --- سینی سیستم ---
+        self._setup_tray()
+
         self.log(tr("log_ready"))
+
+    def _setup_tray(self):
+        """ساخت/حذف آیکون سینی سیستم بر اساس تنظیم tray."""
+        want = bool(self.cfg.get("tray", False))
+        avail = QtWidgets.QSystemTrayIcon.isSystemTrayAvailable()
+        if want and avail:
+            if self._tray is None:
+                self._tray = QtWidgets.QSystemTrayIcon(self)
+                icon = QtGui.QIcon(LOGO_PATH) if os.path.exists(LOGO_PATH) \
+                    else self.windowIcon()
+                self._tray.setIcon(icon)
+                self._tray.setToolTip("LagSlice ⚡")
+                menu = QtWidgets.QMenu()
+                self._tray_act_show = menu.addAction(tr("tray_show"))
+                self._tray_act_show.triggered.connect(self._tray_restore)
+                self._tray_act_quit = menu.addAction(tr("tray_quit"))
+                self._tray_act_quit.triggered.connect(self._tray_quit)
+                self._tray.setContextMenu(menu)
+                self._tray.activated.connect(self._tray_activated)
+            self._tray.show()
+        else:
+            if self._tray is not None:
+                self._tray.hide()
+                self._tray.deleteLater()
+                self._tray = None
+
+    def _tray_activated(self, reason):
+        if reason == QtWidgets.QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._tray_restore()
+
+    def _tray_restore(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_quit(self):
+        self._force_quit = True
+        self.close()
 
     # ============ دوزبانه‌سازی ============
     def toggle_lang(self):
@@ -617,10 +617,27 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
+        self.lbl_theme.setText(tr("set_theme"))
+        # به‌روزرسانی نام تم‌ها با زبان جدید (بدون لوپ سیگنال)
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.clear()
+        self.theme_combo.addItems(
+            [theme_label(k, get_lang()) for k in self._theme_keys])
+        cur = self.cfg.get("theme", DEFAULT_THEME)
+        self.theme_combo.setCurrentIndex(
+            self._theme_keys.index(cur) if cur in self._theme_keys else 0)
+        self.theme_combo.blockSignals(False)
+        self.tray_check.setText(tr("set_tray"))
+        if self._tray is not None:
+            self._tray_act_show.setText(tr("tray_show"))
+            self._tray_act_quit.setText(tr("tray_quit"))
         for h in getattr(self, "_set_heads", []):
             h.setText(tr(h.property("tkey")))
             h.setAlignment(align)
         self.lbl_telegram.setText(tr("set_telegram"))
+        acc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))["accent"]
+        self.tg_link.setText(
+            f'<a href="https://t.me/tha_arf" style="color:{acc};">@tha_arf</a>')
         self.btn_tg_copy.setText(tr("set_copy"))
         self.btn_tg_open.setText(tr("set_telegram_open"))
         self.btn_guide.setText(tr("set_open_guide"))
@@ -663,12 +680,15 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))
 
     def _refresh_pill(self):
+        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
         if self.streaming:
             self.pill.setText(tr("status_streaming"))
-            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
+            self.pill.setStyleSheet(
+                f"background-color: #3A0F1E; color: {tc['red']};")
         else:
             self.pill.setText(tr("status_ready"))
-            self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
+            self.pill.setStyleSheet(
+                f"background-color: {tc['btn_hover']}; color: {tc['muted']};")
         # انیمیشن نرم تغییر وضعیت
         eff = QtWidgets.QGraphicsOpacityEffect(self.pill)
         self.pill.setGraphicsEffect(eff)
@@ -1272,12 +1292,34 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         lrow.addWidget(self.lang_combo, 1)
         lay.addLayout(lrow)
 
+        # — بخش تم —
+        self._set_heads.append(self._set_section(lay, "set_sec_theme"))
+        trow2 = QtWidgets.QHBoxLayout()
+        self.lbl_theme = QtWidgets.QLabel()
+        self.theme_combo = QtWidgets.QComboBox()
+        self._theme_keys = theme_keys()
+        self.theme_combo.addItems(
+            [theme_label(k, get_lang()) for k in self._theme_keys])
+        cur = self.cfg.get("theme", DEFAULT_THEME)
+        self.theme_combo.setCurrentIndex(
+            self._theme_keys.index(cur) if cur in self._theme_keys else 0)
+        self.theme_combo.currentIndexChanged.connect(self._theme_combo_changed)
+        trow2.addWidget(self.lbl_theme)
+        trow2.addWidget(self.theme_combo, 1)
+        lay.addLayout(trow2)
+
+        # — بخش عمومی —
+        self._set_heads.append(self._set_section(lay, "set_sec_general"))
+        self.tray_check = QtWidgets.QCheckBox()
+        self.tray_check.setChecked(bool(self.cfg.get("tray", False)))
+        self.tray_check.toggled.connect(self._tray_toggled)
+        lay.addWidget(self.tray_check)
+
         # — بخش پشتیبانی (تلگرام) —
         self._set_heads.append(self._set_section(lay, "set_sec_contact"))
         trow = QtWidgets.QHBoxLayout()
         self.lbl_telegram = QtWidgets.QLabel()
-        self.tg_link = QtWidgets.QLabel(
-            '<a href="https://t.me/tha_arf" style="color:#00E5FF;">@tha_arf</a>')
+        self.tg_link = QtWidgets.QLabel()
         self.tg_link.setOpenExternalLinks(True)
         self.tg_link.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -1325,6 +1367,26 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.toggle_lang()
             self.lang_combo.setCurrentIndex(0 if new == "fa" else 1)
 
+    def _theme_combo_changed(self, idx):
+        if 0 <= idx < len(self._theme_keys):
+            self.apply_theme(self._theme_keys[idx])
+
+    def apply_theme(self, key):
+        """اعمال تم و ذخیره در کانفیگ."""
+        if key not in theme_keys():
+            key = DEFAULT_THEME
+        self.cfg["theme"] = key
+        save_config(self.cfg)
+        QtWidgets.QApplication.instance().setStyleSheet(build_qss(key))
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentIndex(self._theme_keys.index(key))
+        self.theme_combo.blockSignals(False)
+
+    def _tray_toggled(self, on):
+        self.cfg["tray"] = bool(on)
+        save_config(self.cfg)
+        self._setup_tray()
+
     def _save_settings(self):
         servers = [s.strip() for s in self.server_edit.text().split(",") if s.strip()]
         self.cfg["servers"] = servers or ["8.8.8.8"]
@@ -1362,13 +1424,16 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 extra = ""
             self.card_ping.set(fa_digits(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
-            self.card_ping.set(tr("disconnected"), RED)
+            tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
+            self.card_ping.set(tr("disconnected"), tc["red"])
         self._last_delay_key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
         self._update_delay_card()
 
     def _update_delay_card(self):
         key = self._last_delay_key
-        color = {"good": GREEN, "warn": AMBER, "bad": RED, "unknown": MUTED}[key]
+        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
+        color = {"good": tc["green"], "warn": tc["amber"],
+                 "bad": tc["red"], "unknown": tc["muted"]}[key]
         self.card_delay.set(tr("delay_" + key), color)
         self.card_delay.setToolTip(tr("delay_" + key + "_d"))
 
@@ -1422,6 +1487,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         return f"{name}: {tr(key)}"
 
     def closeEvent(self, event):
+        # حالت سینی سیستم: بستن پنجره فقط مخفی‌اش می‌کند
+        if (self.cfg.get("tray", False) and not self._force_quit
+                and self._tray is not None and self._tray.isVisible()):
+            event.ignore()
+            self.hide()
+            return
         if self._scan_thread is not None:
             self._scan_thread.stop()
             self._scan_thread.wait(3000)
@@ -1438,12 +1509,16 @@ def main():
         _p = asset_path(_f)
         if os.path.exists(_p):
             QtGui.QFontDatabase.addApplicationFont(_p)
-    # جهت اولیه از کانفیگ
-    cfg_lang = load_config().get("lang", "fa")
+    # جهت و تم اولیه از کانفیگ
+    _cfg = load_config()
+    cfg_lang = _cfg.get("lang", "fa")
     app.setLayoutDirection(
         QtCore.Qt.LayoutDirection.RightToLeft if cfg_lang == "fa"
         else QtCore.Qt.LayoutDirection.LeftToRight)
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(build_qss(_cfg.get("theme", DEFAULT_THEME)))
+    # آیکون برنامه برای تسک‌بار و سینی سیستم
+    if os.path.exists(LOGO_PATH):
+        app.setWindowIcon(QtGui.QIcon(LOGO_PATH))
     win = LagSliceWindow()
     win.show()
 

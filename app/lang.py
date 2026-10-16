@@ -248,6 +248,15 @@ STRINGS = {
     "set_copy": {"fa": "📋 کپی", "en": "📋 Copy"},
     "set_copied": {"fa": "کپی شد ✓", "en": "Copied ✓"},
     "set_open_guide": {"fa": "باز کردن فایل راهنما", "en": "Open guide file"},
+    "set_sec_theme": {"fa": "🎨 تم برنامه", "en": "🎨 App theme"},
+    "set_theme": {"fa": "تم:", "en": "Theme:"},
+    "set_sec_general": {"fa": "⚙ عمومی", "en": "⚙ General"},
+    "set_tray": {
+        "fa": "بستن به سینی سیستم (exit to tray)",
+        "en": "Close to system tray (exit to tray)",
+    },
+    "tray_show": {"fa": "نمایش", "en": "Show"},
+    "tray_quit": {"fa": "خروج", "en": "Quit"},
     "about_btn": {"fa": "ℹ درباره", "en": "ℹ About"},
     "about_title": {"fa": "درباره‌ی LagSlice", "en": "About LagSlice"},
     # ---- لاگ ----
