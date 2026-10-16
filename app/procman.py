@@ -9,15 +9,27 @@
 سینک ابری، لانچرها، آپدیترها) + مصرف CPU/RAM شناسایی می‌کنیم و هرگز به
 پروسس‌های سیستمی یا لیست امن دست نمی‌زنیم.
 """
+import csv
+import io
 import json
 import os
+import subprocess
 import sys
-
-import psutil
+import time
 
 from lang import tr
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+
+def _hidden_subprocess_kwargs():
+    """اجرای مخفی بدون پنجره‌ی cmd (ویندوز)."""
+    if sys.platform == "win32":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return dict(startupinfo=si,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+    return {}
 
 
 def base_dir():
@@ -98,12 +110,82 @@ def classify(name):
     return "other"  # safe/hog با توجه به لیست امن و الگوها تعیین می‌شود
 
 
+_SNAPSHOT = []
+_SNAPSHOT_T = 0.0
+_SNAPSHOT_TTL = 8.0
+
+
+def _tasklist_once():
+    """یک بار خواندن tasklist؛ برمی‌گرداند لیستی از {pid, name, mem_mb}.
+
+    عمداً بیرون از پروسس اجرا می‌شود: اگر tasklist خودش مشکلی داشته باشد،
+    برنامه‌ی اصلی کرش نمی‌کند (برخلاف psutil.process_iter).
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        proc = subprocess.run(
+            ["tasklist", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, errors="replace", timeout=30,
+            **_hidden_subprocess_kwargs())
+        out = proc.stdout or ""
+    except Exception:
+        return []
+    rows = []
+    try:
+        for row in csv.reader(io.StringIO(out)):
+            if len(row) < 5:
+                continue
+            name = (row[0] or "").strip()
+            try:
+                pid = int((row[1] or "").strip())
+            except ValueError:
+                continue
+            mem_raw = (row[4] or "").replace(",", "").upper().replace("K", "").strip()
+            try:
+                mem_mb = int(mem_raw) / 1024.0
+            except ValueError:
+                mem_mb = 0.0
+            if not name or pid <= 0:
+                continue
+            rows.append({"pid": pid, "name": name, "mem_mb": mem_mb})
+    except Exception:
+        return []
+    return rows
+
+
+def snapshot_procs():
+    """اسنپ‌شات کش‌شده‌ی پروسس‌ها (حداکثر ۸ ثانیه قدمت)."""
+    global _SNAPSHOT, _SNAPSHOT_T
+    now = time.monotonic()
+    if now - _SNAPSHOT_T > _SNAPSHOT_TTL or not _SNAPSHOT:
+        _SNAPSHOT = _tasklist_once()
+        _SNAPSHOT_T = now
+    return _SNAPSHOT
+
+
+def pid_to_name(pid):
+    """نام پروسس برای pid از روی آخرین اسنپ‌شات؛ "" اگر پیدا نشد."""
+    try:
+        want = int(pid)
+    except (TypeError, ValueError):
+        return ""
+    for p in snapshot_procs():
+        if p["pid"] == want:
+            return p["name"]
+    return ""
+
+
 def iter_processes(safelist):
-    """لیست پروسس‌های کاربر؛ هر کدام: pid, name, cpu, mem_mb, kind."""
+    """لیست پروسس‌های کاربر؛ هر کدام: pid, name, cpu, mem_mb, kind.
+
+    cpu همیشه None است (ستون «—» نشان می‌دهد): خواندن درصد CPU هر پروسس
+    با psutil روی بعضی سیستم‌ها کرش native می‌داد، پس کلاً حذف شد.
+    """
     out = []
-    for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info"]):
+    for p in snapshot_procs():
         try:
-            name = (p.info["name"] or "").strip()
+            name = (p["name"] or "").strip()
             if not name:
                 continue
             lname = name.lower()
@@ -115,41 +197,47 @@ def iter_processes(safelist):
                 kind = "hog"
             else:
                 kind = "other"
-            mem = p.info["memory_info"]
             hog_key = "hog_" + lname
             out.append({
-                "pid": p.info["pid"],
+                "pid": p["pid"],
                 "name": name,
-                "cpu": round(p.info["cpu_percent"] or 0.0, 1),
-                "mem_mb": round((mem.rss if mem else 0) / 1024 / 1024, 1),
+                "cpu": None,
+                "mem_mb": round(p["mem_mb"], 1),
                 "kind": kind,
                 "fa": tr(hog_key) if kind == "hog" and tr(hog_key) != hog_key else "",
             })
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except Exception:
             continue
     out.sort(key=lambda x: ({"hog": 0, "other": 1, "safe": 2}[x["kind"]], -x["mem_mb"]))
     return out
 
 
 def kill_process(pid):
-    """بستن امن یک پروسس؛ برمی‌گرداند (ok, key, param) و main ترجمه می‌کند."""
+    """بستن امن یک پروسس با taskkill (بدون psutil)."""
     try:
-        p = psutil.Process(pid)
-        name = p.name()
-        if classify(name) == "never":
-            return False, "kill_system", ""
-        p.terminate()
-        try:
-            p.wait(timeout=3)
-        except psutil.TimeoutExpired:
-            p.kill()
-        return True, "kill_ok", name
-    except psutil.NoSuchProcess:
-        return False, "kill_gone", ""
-    except psutil.AccessDenied:
-        return False, "kill_denied", ""
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False, "kill_err", ""
+    name = pid_to_name(pid)
+    if name and classify(name) == "never":
+        return False, "kill_system", ""
+    if sys.platform != "win32":
+        return False, "kill_err", ""
+    try:
+        proc = subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True, text=True, errors="replace", timeout=15,
+            **_hidden_subprocess_kwargs())
+        if proc.returncode == 0:
+            return True, "kill_ok", name or str(pid)
+        err = ((proc.stderr or "") + " " + (proc.stdout or "")).lower()
+        if "not found" in err:
+            return False, "kill_gone", ""
+        if "access is denied" in err:
+            return False, "kill_denied", ""
+        return False, "kill_err", (proc.stderr or proc.stdout or "").strip()[:200]
     except Exception as e:
-        return False, "kill_err", str(e)
+        return False, "kill_err", str(e)[:200]
 
 
 def stream_mode_cleanup(safelist):

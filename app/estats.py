@@ -13,7 +13,6 @@ All Windows-only code is guarded so the module imports anywhere.
 """
 
 import ctypes
-import os
 import socket
 import sys
 import time
@@ -22,8 +21,6 @@ WIN32 = sys.platform == "win32"
 
 MIB_TCP_STATE_ESTAB = 5
 
-# کلید عیب‌یابی کرش: با LAGSLICE_NO_ESTATS=1 هیچ فراخوانی EStats انجام نمی‌شود.
-_NO_ESTATS = os.environ.get("LAGSLICE_NO_ESTATS", "") == "1"
 
 _iphlpapi = None
 _Row = None
@@ -189,7 +186,7 @@ class ProcNetMonitor:
         self._enabled = set()
         self._prev = {}
         self._last_t = None
-        self.available = bool(_iphlpapi) and not _NO_ESTATS
+        self.available = bool(_iphlpapi)
 
     def sample(self):
         if not self.available:

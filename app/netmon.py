@@ -8,7 +8,6 @@
 (پینگ با دستور بومی هر سیستم‌عامل).
 """
 import sys
-import os
 import time
 import re
 import socket
@@ -21,34 +20,7 @@ from PyQt6 import QtCore
 from estats import ProcNetMonitor
 
 
-# ---- ضربان عیب‌یابی کرش ----
-# با LAGSLICE_DIAG=1 نخ مانیتور قبل/بعد هر عملیات native یک خط در
-# LagSlice-diag.log (کنار exe) می‌نویسد؛ آخرین خط موقع کرش نشان می‌دهد
-# دقیقاً کدام فراخوانی مرده است.
-_DIAG = os.environ.get("LAGSLICE_DIAG", "") == "1"
-_diag_fh = None
 
-
-def _diag_path():
-    try:
-        d = os.path.dirname(sys.executable)
-        if d:
-            return os.path.join(d, "LagSlice-diag.log")
-    except Exception:
-        pass
-    return os.path.join(os.path.expanduser("~"), "LagSlice-diag.log")
-
-
-def _diag(msg):
-    if not _DIAG:
-        return
-    global _diag_fh
-    try:
-        if _diag_fh is None:
-            _diag_fh = open(_diag_path(), "a", encoding="utf-8", buffering=1)
-        _diag_fh.write(msg + "\n")
-    except Exception:
-        pass
 
 
 # ============ موتور پروب سرور (پورت StreamScanner) ============
@@ -165,17 +137,12 @@ class NetMonitor(QtCore.QThread):
         self._running = False
 
     def run(self):
-        _diag("run: start")
         psutil.net_io_counters()  # مقدار اولیه
-        _diag("run: net_io baseline ok")
         self._procmon.sample()  # baseline برای EStats
-        _diag("run: estats baseline ok")
         while self._running:
             t0 = time.time()
             self._tick += 1
-            _diag(f"tick {self._tick}: net_io begin")
             cur = psutil.net_io_counters()
-            _diag(f"tick {self._tick}: net_io ok")
             if self._last is not None:
                 dt = t0 - self._last_t
                 up = (cur.bytes_sent - self._last.bytes_sent) * 8 / dt / 1e6
@@ -187,19 +154,15 @@ class NetMonitor(QtCore.QThread):
             # آمار per-process هر ۲ تیک (EStats کمی سنگین است)
             per_proc = {}
             if self._tick % 2 == 0:
-                _diag(f"tick {self._tick}: estats begin")
                 try:
                     per_proc = self._procmon.sample()
                 except Exception:
                     per_proc = {}
-                _diag(f"tick {self._tick}: estats ok")
 
             servers = self._get_servers() or []
             ping_ms, jitter_ms = None, None
             if servers:
-                _diag(f"tick {self._tick}: ping begin")
                 ping_ms = self._ping(servers[0])
-                _diag(f"tick {self._tick}: ping ok")
                 if ping_ms is not None:
                     self._ping_hist.append(ping_ms)
                     if len(self._ping_hist) >= 3:
@@ -216,11 +179,8 @@ class NetMonitor(QtCore.QThread):
                 "per_proc": per_proc,
             }
             # emit مستقیم امن است (سیگنال‌های Qt بین تردی صف می‌شوند)
-            _diag(f"tick {self._tick}: emit begin")
             self.updated.emit(stats)
-            _diag(f"tick {self._tick}: emit ok")
             time.sleep(1.0)
-        _diag("run: end")
 
     @staticmethod
     def _ping(host):

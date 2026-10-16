@@ -17,41 +17,6 @@ import threading
 import time
 import traceback
 
-# کلید عیب‌یابی کرش شماره‌ی ۲: با LAGSLICE_NO_PSUTIL=1 کل ماژول psutil
-# با یک نسخه‌ی تقلبی جایگزین می‌شود (شبکه صفر، لیست پروسس خالی).
-# باید قبل از هر import دیگری باشد تا همه‌ی ماژول‌ها همان را بگیرند.
-_NO_PSUTIL = os.environ.get("LAGSLICE_NO_PSUTIL", "") == "1"
-_NO_PROCITER = os.environ.get("LAGSLICE_NO_PROCITER", "") == "1"
-if _NO_PSUTIL or _NO_PROCITER:
-    import types
-
-    _psutil_fake = types.ModuleType("psutil")
-
-    if _NO_PSUTIL:
-        def _fake_net_io_counters():
-            return types.SimpleNamespace(bytes_sent=0, bytes_recv=0,
-                                         packets_sent=0, packets_recv=0,
-                                         errin=0, errout=0, dropin=0, dropout=0)
-    else:
-        import psutil as _psutil_real
-        _fake_net_io_counters = _psutil_real.net_io_counters
-        del _psutil_real
-
-    _psutil_fake.net_io_counters = _fake_net_io_counters
-    # در هر دو حالت عیب‌یابی، process_iter خاموش است (مظنون اصلی کرش)
-    _psutil_fake.process_iter = lambda *a, **k: iter(())
-
-    class _FakeProcess:
-        def __init__(self, *a, **k):
-            raise RuntimeError("process_iter disabled for crash diagnosis")
-
-    _psutil_fake.Process = _FakeProcess
-    for _exc_name in ("NoSuchProcess", "AccessDenied", "TimeoutExpired",
-                      "ZombieProcess"):
-        setattr(_psutil_fake, _exc_name, type(_exc_name, (Exception,), {}))
-    sys.modules["psutil"] = _psutil_fake
-    del _psutil_fake
-del _NO_PSUTIL, _NO_PROCITER
 
 
 def _crash_log_path():
@@ -137,26 +102,13 @@ def _enable_faulthandler():
 
 _enable_faulthandler()
 
-# علامت عیب‌یابی: اگر EStats/psutil با متغیر محیطی خاموش شده، در لاگ ثبت شود
-# تا موقع بررسی کرش معلوم باشد برنامه در کدام حالت اجرا شده است.
-for _diag_key, _diag_msg in (
-        ("LAGSLICE_NO_ESTATS", "EStats disabled for crash diagnosis"),
-        ("LAGSLICE_NO_PSUTIL", "psutil disabled for crash diagnosis"),
-        ("LAGSLICE_NO_PROCITER", "process_iter disabled for crash diagnosis")):
-    if os.environ.get(_diag_key, "") == "1":
-        try:
-            with open(_crash_log_path(), "a", encoding="utf-8") as _df:
-                _df.write(f"{_diag_key}=1: {_diag_msg}\n")
-        except Exception:
-            pass
-del _diag_key, _diag_msg
-
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from lang import tr, set_lang, get_lang, fa_digits
-from netmon import NetMonitor, delay_health, _diag
+from netmon import NetMonitor, delay_health
 from procman import (
     iter_processes, kill_process, stream_mode_cleanup,
+    snapshot_procs, pid_to_name,
     load_safelist, save_safelist, is_admin, base_dir,
     NEVER_TOUCH, HOG_PATTERNS,
 )
@@ -166,7 +118,6 @@ from servers import (
     server_rtmp_url, parse_rtmp, suggest_name, detect_region,
 )
 from scan import ScanThread
-import psutil
 
 REGIONS = ("ir", "de", "fr", "nl", "uk", "tr", "ae", "")
 
@@ -438,11 +389,8 @@ class SafePickDialog(QtWidgets.QDialog):
         lay.addWidget(self.list)
         self._names = []
         seen = set()
-        for p in psutil.process_iter(["name"]):
-            try:
-                n = (p.info.get("name") or "").strip().lower()
-            except Exception:
-                continue
+        for p in snapshot_procs():
+            n = (p["name"] or "").strip().lower()
             if not n or n in seen or n in NEVER_TOUCH or n in safelist:
                 continue
             seen.add(n)
@@ -776,10 +724,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             # حالت شبکه: آپلود/دانلود واقعی هر برنامه (EStats، بدون درایور)
             rows = []
             for pid, e in per_proc.items():
-                try:
-                    name = psutil.Process(int(pid)).name() or ""
-                except Exception:
-                    continue
+                name = pid_to_name(pid) or ""
                 lname = name.lower()
                 if lname in NEVER_TOUCH or lname in self.safelist:
                     continue
@@ -811,9 +756,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     r, 3, self._tcell(fa_digits(p["pid"]), numeric=True))
                 self._set_kill_button(r, p["pid"])
             return
-        _diag("refresh_procs: iter_processes begin")
         procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
-        _diag("refresh_procs: iter_processes ok")
         self.proc_table.setHorizontalHeaderLabels(
             [tr("col_app"), tr("col_pid"), tr("col_cpu"), tr("col_ram"), ""])
         if not procs:
@@ -826,7 +769,9 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 label = "🔥 " + label
             self.proc_table.setItem(r, 0, self._tcell(label))
             self.proc_table.setItem(r, 1, self._tcell(fa_digits(p["pid"]), numeric=True))
-            self.proc_table.setItem(r, 2, self._tcell(fa_digits(p["cpu"]), numeric=True))
+            self.proc_table.setItem(
+                r, 2, self._tcell(fa_digits(p["cpu"]) if p["cpu"] is not None else "—",
+                                  numeric=True))
             self.proc_table.setItem(r, 3, self._tcell(fa_digits(p["mem_mb"]), numeric=True))
             self._set_kill_button(r, p["pid"])
         self.proc_table.resizeColumnsToContents()
