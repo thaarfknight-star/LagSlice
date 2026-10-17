@@ -314,9 +314,13 @@ STRINGS = {
     # ---- حالت دانلود (استفاده‌ی روزمره) ----
     "mode_stream": {"fa": "🎥 حالت استریم", "en": "🎥 Stream mode"},
     "mode_download": {"fa": "⬇ حالت دانلود", "en": "⬇ Download mode"},
-    "mode_tip": {
+    "mode_tip_download": {
         "fa": "در حالت دانلود، رقبای دانلود (لانچرهای بازی و همگام‌سازی ابری) بسته می‌شوند تا پهنای باند برای استیم و ویدیو آزاد بماند؛ استیم و مرورگر بسته نمی‌شوند.",
         "en": "In download mode, download competitors (game launchers and cloud sync) are closed to free bandwidth for Steam and video; Steam and browsers are never closed.",
+    },
+    "mode_tip_stream": {
+        "fa": "در حالت استریم، برنامه‌های اینترنت‌خور (غیر از لیست امن) بسته می‌شوند تا پهنای باند آپلود برای استریم آزاد بماند.",
+        "en": "In stream mode, bandwidth-hogging apps (except the safe list) are closed to free upload bandwidth for streaming.",
     },
     "dl_start": {"fa": "⬇ بهینه‌سازی دانلود", "en": "⬇ Optimize downloads"},
     "dl_stop": {"fa": "⏹ توقف بهینه‌سازی", "en": "⏹ Stop optimizing"},

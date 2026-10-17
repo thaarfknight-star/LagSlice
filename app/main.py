@@ -428,6 +428,51 @@ class SafePickDialog(QtWidgets.QDialog):
         return out
 
 
+class ToggleSwitch(QtWidgets.QAbstractButton):
+    """سوییچ کشویی on/off مثل سوییچ تم دارک/لایت.
+
+    checked یعنی حالت استریم؛ unchecked یعنی حالت دانلود.
+    موقعیت دکمه در هر دو جهت ثابت است: روشن = سمت راست.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(58, 28)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._tc = {}
+
+    def set_theme_colors(self, tc):
+        self._tc = dict(tc or {})
+        self.update()
+
+    def paintEvent(self, _ev):
+        tc = self._tc
+        on = self.isChecked()
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor(
+            tc.get("accent", "#00E5FF") if on else tc.get("border", "#1C3040")))
+        p.drawRoundedRect(QtCore.QRectF(1, 1, w - 2, h - 2), (h - 2) / 2, (h - 2) / 2)
+        d = h - 8
+        x = w - 4 - d if on else 4
+        p.setBrush(QtGui.QColor("#FFFFFF"))
+        p.drawEllipse(QtCore.QRectF(x, 4, d, d))
+        p.end()
+
+
+class _ClickLabel(QtWidgets.QLabel):
+    """لیبل قابل‌کلیک برای کنار سوییچ."""
+
+    clicked = QtCore.pyqtSignal()
+
+    def mousePressEvent(self, ev):
+        self.clicked.emit()
+        super().mousePressEvent(ev)
+
+
 class LagSliceWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -468,24 +513,24 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         for i, tkey in enumerate(("tab_procs", "tab_scan", "tab_safe",
                                   "tab_settings", "tab_log")):
             b = QtWidgets.QPushButton(tr(tkey))
-            b.setObjectName("Nav")
+            b.setObjectName("Lang")  # هم‌استایل با دکمه‌های حالت
             b.setCheckable(True)
             b.setProperty("tkey", tkey)
             b.clicked.connect(lambda _=False, idx=i: self.tabs.setCurrentIndex(idx))
             nav_group.addButton(b, i)
             head.addWidget(b)
             self._nav_btns.append(b)
-        # سوییچ حالت: استریم / دانلود
-        self.btn_mode_stream = QtWidgets.QPushButton()
-        self.btn_mode_stream.setObjectName("Lang")
-        self.btn_mode_stream.clicked.connect(lambda: self.set_mode("stream"))
-        self.btn_mode_stream.setToolTip(tr("mode_tip"))
-        head.addWidget(self.btn_mode_stream)
-        self.btn_mode_download = QtWidgets.QPushButton()
-        self.btn_mode_download.setObjectName("Lang")
-        self.btn_mode_download.clicked.connect(lambda: self.set_mode("download"))
-        self.btn_mode_download.setToolTip(tr("mode_tip"))
-        head.addWidget(self.btn_mode_download)
+        # سوییچ تکی حالت: استریم / دانلود
+        self.mode_label = _ClickLabel(tr("mode_stream"))
+        self.mode_label.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self.mode_label.clicked.connect(lambda: self.mode_switch.click())
+        head.addWidget(self.mode_label)
+        self.mode_switch = ToggleSwitch()
+        self.mode_switch.set_theme_colors(
+            theme_colors(self.cfg.get("theme", DEFAULT_THEME)))
+        self.mode_switch.clicked.connect(
+            lambda checked: self.set_mode("stream" if checked else "download"))
+        head.addWidget(self.mode_switch)
         head.addStretch(1)
 
         root.addLayout(head)
@@ -607,11 +652,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                  else QtCore.Qt.AlignmentFlag.AlignLeft)
         for b in self._nav_btns:
             b.setText(tr(b.property("tkey")))
-        self.btn_mode_stream.setText(tr("mode_stream"))
-        self.btn_mode_download.setText(tr("mode_download"))
-        self.btn_mode_stream.setToolTip(tr("mode_tip"))
-        self.btn_mode_download.setToolTip(tr("mode_tip"))
-        self._refresh_mode_buttons()
+        self._refresh_mode_switch()
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
@@ -1423,6 +1464,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.cfg["theme"] = key
         save_config(self.cfg)
         QtWidgets.QApplication.instance().setStyleSheet(build_qss(key))
+        self.mode_switch.set_theme_colors(theme_colors(key))
         self.theme_combo.blockSignals(True)
         self.theme_combo.setCurrentIndex(self._theme_keys.index(key))
         self.theme_combo.blockSignals(False)
@@ -1522,23 +1564,24 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             return
         self.cfg["mode"] = mode
         save_config(self.cfg)
-        self._refresh_mode_buttons()
+        self._refresh_mode_switch()
         self._refresh_stream_btn()
         self._update_delay_card()
         self.refresh_procs()
         self.log(tr("log_mode_download" if mode == "download"
                      else "log_mode_stream"))
 
-    def _refresh_mode_buttons(self):
+    def _refresh_mode_switch(self):
+        """سینک سوییچ حالت با mode ذخیره‌شده + تول‌تیپ درست هر حالت."""
         mode = self.cfg.get("mode", "stream")
-        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
-        for btn, m in ((self.btn_mode_stream, "stream"),
-                       (self.btn_mode_download, "download")):
-            if m == mode:
-                btn.setStyleSheet(
-                    f"border: 2px solid {tc['accent']}; background-color: {tc['btn_hover']};")
-            else:
-                btn.setStyleSheet("")
+        is_stream = (mode == "stream")
+        self.mode_switch.blockSignals(True)
+        self.mode_switch.setChecked(is_stream)
+        self.mode_switch.blockSignals(False)
+        self.mode_label.setText(tr("mode_stream") if is_stream else tr("mode_download"))
+        tip = tr("mode_tip_stream") if is_stream else tr("mode_tip_download")
+        self.mode_switch.setToolTip(tip)
+        self.mode_label.setToolTip(tip)
 
     # ---------- حالت استریم / بهینه‌سازی دانلود ----------
     def toggle_stream(self):
