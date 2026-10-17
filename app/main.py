@@ -703,7 +703,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             dl = self.cfg.get("mode", "stream") == "download"
             self.pill.setText(tr("status_downloading" if dl
                                  else "status_streaming"))
-            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
+            self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {tc['red']};")
         else:
             self.pill.setText(tr("status_ready"))
             self.pill.setStyleSheet(
@@ -1496,7 +1496,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.card_delay.set_name_key("stat_competitors")
             self.card_delay.setToolTip(tr("tip_competitors"))
             mbps = getattr(self, "_last_comp_down_mbps", 0.0)
-            color = GREEN if mbps < 0.5 else (AMBER if mbps < 5 else RED)
+            tc2 = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
+            color = tc2["green"] if mbps < 0.5 else (tc2["amber"] if mbps < 5 else tc2["red"])
             self.card_delay.set(fa_digits(f"{mbps:.1f}") + " Mbps", color)
             return
         self.card_delay.set_name_key("stat_delay")
@@ -1522,11 +1523,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
 
     def _refresh_mode_buttons(self):
         mode = self.cfg.get("mode", "stream")
+        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
         for btn, m in ((self.btn_mode_stream, "stream"),
                        (self.btn_mode_download, "download")):
             if m == mode:
                 btn.setStyleSheet(
-                    f"border: 2px solid {CYAN}; background-color: #1B2940;")
+                    f"border: 2px solid {tc['accent']}; background-color: {tc['btn_hover']};")
             else:
                 btn.setStyleSheet("")
 
