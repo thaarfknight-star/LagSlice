@@ -110,6 +110,7 @@ from procman import (
     iter_processes, kill_process, stream_mode_cleanup,
     snapshot_procs, pid_to_name,
     load_safelist, save_safelist, is_admin, base_dir,
+    is_hog,
     NEVER_TOUCH, HOG_PATTERNS,
 )
 from servers import (
@@ -203,62 +204,17 @@ def about_text():
             continue
     return "LagSlice ⚡ — " + tr("app_subtitle") + "\nCopyright (C) 2026 Taha Arefi\nAGPL-3.0-only"
 
-CYAN = "#00E5FF"
-MAGENTA = "#FF00D4"
-BG = "#0B0F17"
-CARD = "#101724"
-BORDER = "#1E2A3D"
-TEXT = "#E8EDF5"
-MUTED = "#9AA4B5"
-GREEN = "#22E584"
-AMBER = "#FFB020"
-RED = "#FF4D5E"
+from themes import build_qss, theme_keys, theme_label, theme_colors, DEFAULT_THEME
 
-QSS = f"""
-QWidget {{ background-color: {BG}; color: {TEXT}; font-family: "Vazirmatn", "Segoe UI", Tahoma, sans-serif; font-size: 13px; }}
-QLabel#Title {{ font-size: 22px; font-weight: bold; color: {CYAN}; }}
-QLabel#Sub {{ font-size: 12px; color: {MUTED}; }}
-QLabel#StatVal {{ font-size: 20px; font-weight: bold; color: {TEXT}; }}
-QLabel#StatName {{ font-size: 11px; color: {MUTED}; }}
-QLabel#Pill {{ border-radius: 12px; padding: 6px 14px; font-weight: bold; }}
-QLabel#BestBanner {{ background-color: #0E2A1A; color: #34D399; border: 1px solid #34D399;
-    border-radius: 8px; padding: 8px 12px; font-weight: bold; }}
-QLabel#SecHead {{ font-size: 15px; font-weight: bold; color: {CYAN};
-    border-bottom: 1px solid {BORDER}; padding: 8px 2px 6px 2px; margin-top: 6px; }}
-QTextEdit#About {{ background-color: {CARD}; border: 1px solid {BORDER};
-    border-radius: 8px; padding: 8px; font-size: 12px; color: {MUTED}; }}
-QProgressBar {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 6px;
-    text-align: center; color: {MUTED}; }}
-QProgressBar::chunk {{ background-color: {CYAN}; border-radius: 6px; }}
-QFrame#Card {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 12px; }}
-QPushButton {{ background-color: #16202F; border: 1px solid {CYAN}; border-radius: 10px; color: {TEXT}; font-weight: bold; }}
-QPushButton:hover {{ background-color: #1B2940; }}
-QPushButton:disabled {{ border-color: #3A4356; color: #5B6577; background-color: #121826; }}
-QPushButton#Go {{ border-color: {GREEN}; font-size: 15px; padding: 14px; }}
-QPushButton#Stop {{ border-color: {RED}; font-size: 15px; padding: 14px; }}
-QPushButton#Danger {{ border-color: {MAGENTA}; }}
-QPushButton#Lang {{ border-color: {MAGENTA}; padding: 6px 14px; }}
-/* دکمه‌های بیرون جدول: پدینگ (داخل QTableWidget در RTL باگ دارد) */
-QDialog QPushButton, QTabWidget QPushButton {{ padding: 10px 18px; }}
-QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; }}
-QTabBar::tab {{ background: {CARD}; color: {MUTED}; padding: 8px 18px; border-top-left-radius: 8px; border-top-right-radius: 8px; }}
-QTabBar::tab:selected {{ color: {CYAN}; border-bottom: 2px solid {CYAN}; }}
-QTableWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; gridline-color: {BORDER}; }}
-QTableWidget::item {{ padding: 4px; }}
-QHeaderView::section {{ background-color: #141C2B; color: {MUTED}; border: none; padding: 6px; }}
-QListWidget {{ background-color: {CARD}; border: 1px solid {BORDER}; border-radius: 8px; }}
-QLineEdit, QSpinBox, QDoubleSpinBox {{ background-color: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 8px; }}
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QSpinBox::up-button, QSpinBox::down-button {{
-    subcontrol-origin: border; width: 24px; border: none; background: transparent; }}
-QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover,
-QSpinBox::up-button:hover, QSpinBox::down-button:hover {{ background-color: #1B2940; }}
-QTextEdit#Log {{ background-color: #080B11; border: 1px solid {BORDER}; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; }}
-QLabel#Warn {{ background-color: #2A1E08; border: 1px solid {AMBER}; border-radius: 8px; padding: 8px 12px; color: {AMBER}; }}
-"""
+# تم پیش‌فرض؛ QSS واقعی در main() از روی کانفیگ ساخته می‌شود
+QSS = build_qss(DEFAULT_THEME)
 
 
 def load_config():
-    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa"}
+    cfg = {"servers": ["8.8.8.8"], "bitrate_mbps": 8.0, "lang": "fa",
+           "ping_enabled": True,
+           "theme": DEFAULT_THEME, "tray": False,
+           "mode": "stream"}
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -268,6 +224,10 @@ def load_config():
         pass
     if cfg.get("lang") not in ("fa", "en"):
         cfg["lang"] = "fa"
+    if cfg.get("theme") not in theme_keys():
+        cfg["theme"] = DEFAULT_THEME
+    if cfg.get("mode") not in ("stream", "download"):
+        cfg["mode"] = "stream"
     return cfg
 
 
@@ -292,12 +252,16 @@ class StatCard(QtWidgets.QFrame):
         self.retranslate()
 
     def retranslate(self):
-        self.name_lbl.setText(tr(self._name_key))
-        # حسابرسی RTL: لیبل فارسی راست‌چین؛ مقدار عددی همیشه چپ‌چین/LTR
+        self.name_lbl.setText(tr(self._name_key))        # حسابرسی RTL: لیبل فارسی راست‌چین؛ مقدار عددی همیشه چپ‌چین/LTR
         rtl = get_lang() == "fa"
         self.name_lbl.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight if rtl
             else QtCore.Qt.AlignmentFlag.AlignLeft)
+
+    def set_name_key(self, key):
+        """تعویض لیبل کارت (برای حالت دانلود/استریم)."""
+        self._name_key = key
+        self.retranslate()
         self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
         self.val_lbl.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight if rtl
@@ -465,9 +429,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.servers = load_servers()
         self.streaming = False
         self._last_delay_key = "unknown"
+        self._last_comp_down_mbps = 0.0
         self._scan_thread = None
         self._scanning = False
         self._scan_results = {}
+        self._tray = None
+        self._tray_act_show = None
+        self._tray_act_quit = None
+        self._force_quit = False
 
         self.setWindowTitle(f"LagSlice ⚡ (v{__version__})")
         self.resize(980, 700)
@@ -477,41 +446,40 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         root = QtWidgets.QVBoxLayout(central)
         root.setSpacing(10)
 
-        # --- سربرگ ---
+        # --- سربرگ: لوگو + دکمه‌های ناوبری صفحات ---
         head = QtWidgets.QHBoxLayout()
+        head.setSpacing(6)
         if os.path.exists(LOGO_PATH):
             logo = QtWidgets.QLabel()
-            pm = QtGui.QPixmap(LOGO_PATH).scaledToHeight(64, QtCore.Qt.TransformationMode.SmoothTransformation)
+            pm = QtGui.QPixmap(LOGO_PATH).scaledToHeight(56, QtCore.Qt.TransformationMode.SmoothTransformation)
             logo.setPixmap(pm)
             head.addWidget(logo)
-        tbox = QtWidgets.QVBoxLayout()
-        self.title_lbl = QtWidgets.QLabel("LagSlice ⚡")
-        self.title_lbl.setObjectName("Title")
-        self.sub_lbl = QtWidgets.QLabel()
-        self.sub_lbl.setObjectName("Sub")
-        tbox.addWidget(self.title_lbl)
-        tbox.addWidget(self.sub_lbl)
-        head.addLayout(tbox)
+        self._nav_btns = []
+        nav_group = QtWidgets.QButtonGroup(self)
+        nav_group.setExclusive(True)
+        for i, tkey in enumerate(("tab_procs", "tab_scan", "tab_safe",
+                                  "tab_settings", "tab_log")):
+            b = QtWidgets.QPushButton(tr(tkey))
+            b.setObjectName("Nav")
+            b.setCheckable(True)
+            b.setProperty("tkey", tkey)
+            b.clicked.connect(lambda _=False, idx=i: self.tabs.setCurrentIndex(idx))
+            nav_group.addButton(b, i)
+            head.addWidget(b)
+            self._nav_btns.append(b)
+        # سوییچ حالت: استریم / دانلود
+        self.btn_mode_stream = QtWidgets.QPushButton()
+        self.btn_mode_stream.setObjectName("Lang")
+        self.btn_mode_stream.clicked.connect(lambda: self.set_mode("stream"))
+        self.btn_mode_stream.setToolTip(tr("mode_tip"))
+        head.addWidget(self.btn_mode_stream)
+        self.btn_mode_download = QtWidgets.QPushButton()
+        self.btn_mode_download.setObjectName("Lang")
+        self.btn_mode_download.clicked.connect(lambda: self.set_mode("download"))
+        self.btn_mode_download.setToolTip(tr("mode_tip"))
+        head.addWidget(self.btn_mode_download)
         head.addStretch(1)
-        self.btn_lang = QtWidgets.QPushButton()
-        self.btn_lang.setObjectName("Lang")
-        self.btn_lang.clicked.connect(self.toggle_lang)
-        head.addWidget(self.btn_lang)
-        self.btn_about = QtWidgets.QPushButton()
-        self.btn_about.setObjectName("Lang")
-        self.btn_about.clicked.connect(self.show_about)
-        head.addWidget(self.btn_about)
-        self.btn_update = QtWidgets.QPushButton()
-        self.btn_update.setObjectName("Lang")
-        self.btn_update.clicked.connect(self.show_update)
-        head.addWidget(self.btn_update)
-        self.btn_help = QtWidgets.QPushButton()
-        self.btn_help.setObjectName("Lang")
-        self.btn_help.clicked.connect(self.show_help)
-        head.addWidget(self.btn_help)
-        self.pill = QtWidgets.QLabel()
-        self.pill.setObjectName("Pill")
-        head.addWidget(self.pill)
+
         root.addLayout(head)
 
         self.warn_lbl = QtWidgets.QLabel()
@@ -544,9 +512,15 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._build_settings_tab()
         self._build_log_tab()
 
+        # تب‌بار پیش‌فرض مخفی؛ ناوبری از دکمه‌های هدر انجام می‌شود
+        self.tabs.tabBar().setVisible(False)
+        self.tabs.currentChanged.connect(self._sync_nav)
+        if self._nav_btns:
+            self._nav_btns[0].setChecked(True)
+
         self.apply_language()
-        self._refresh_pill()
         self._refresh_stream_btn()
+        self._apply_ping_visibility()
 
         # --- مانیتور شبکه ---
         self.netmon = NetMonitor(self._servers, self)
@@ -558,7 +532,48 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.proc_timer.start(5000)
         self.refresh_procs()
 
+        # --- سینی سیستم ---
+        self._setup_tray()
+
         self.log(tr("log_ready"))
+
+    def _setup_tray(self):
+        """ساخت/حذف آیکون سینی سیستم بر اساس تنظیم tray."""
+        want = bool(self.cfg.get("tray", False))
+        avail = QtWidgets.QSystemTrayIcon.isSystemTrayAvailable()
+        if want and avail:
+            if self._tray is None:
+                self._tray = QtWidgets.QSystemTrayIcon(self)
+                icon = QtGui.QIcon(LOGO_PATH) if os.path.exists(LOGO_PATH) \
+                    else self.windowIcon()
+                self._tray.setIcon(icon)
+                self._tray.setToolTip("LagSlice ⚡")
+                menu = QtWidgets.QMenu()
+                self._tray_act_show = menu.addAction(tr("tray_show"))
+                self._tray_act_show.triggered.connect(self._tray_restore)
+                self._tray_act_quit = menu.addAction(tr("tray_quit"))
+                self._tray_act_quit.triggered.connect(self._tray_quit)
+                self._tray.setContextMenu(menu)
+                self._tray.activated.connect(self._tray_activated)
+            self._tray.show()
+        else:
+            if self._tray is not None:
+                self._tray.hide()
+                self._tray.deleteLater()
+                self._tray = None
+
+    def _tray_activated(self, reason):
+        if reason == QtWidgets.QSystemTrayIcon.ActivationReason.DoubleClick:
+            self._tray_restore()
+
+    def _tray_restore(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _tray_quit(self):
+        self._force_quit = True
+        self.close()
 
     # ============ دوزبانه‌سازی ============
     def toggle_lang(self):
@@ -582,11 +597,13 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         rtl = get_lang() == "fa"
         align = (QtCore.Qt.AlignmentFlag.AlignRight if rtl
                  else QtCore.Qt.AlignmentFlag.AlignLeft)
-        self.sub_lbl.setText(tr("app_subtitle"))
-        self.btn_lang.setText("EN" if rtl else "فا")
-        self.btn_about.setText(tr("about_btn"))
-        self.btn_update.setText(tr("upd_btn"))
-        self.btn_help.setText(tr("help_btn"))
+        for b in self._nav_btns:
+            b.setText(tr(b.property("tkey")))
+        self.btn_mode_stream.setText(tr("mode_stream"))
+        self.btn_mode_download.setText(tr("mode_download"))
+        self.btn_mode_stream.setToolTip(tr("mode_tip"))
+        self.btn_mode_download.setToolTip(tr("mode_tip"))
+        self._refresh_mode_buttons()
         self.warn_lbl.setText(tr("admin_warn"))
         self.warn_lbl.setAlignment(align)
         for c in (self.card_up, self.card_down, self.card_ping, self.card_delay):
@@ -599,7 +616,6 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.safe_hint.setAlignment(align)
         self.set_note.setAlignment(align)
         self.ping_hint.setAlignment(align)
-        self._refresh_pill()
         self._refresh_stream_btn()
         self.tabs.setTabText(0, tr("tab_procs"))
         self.tabs.setTabText(1, tr("tab_scan"))
@@ -614,16 +630,30 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.lbl_server.setText(tr("set_server"))
         self.server_edit.setPlaceholderText(tr("set_server_ph"))
         self.lbl_bitrate.setText(tr("set_bitrate"))
+        self.ping_check.setText(tr("set_ping_toggle"))
         self.btn_save.setText(tr("set_save"))
         self.set_note.setText(tr("set_note"))
         self.lbl_lang.setText(tr("lang_label"))
+        self.lbl_theme.setText(tr("set_theme"))
+        # به‌روزرسانی نام تم‌ها با زبان جدید (بدون لوپ سیگنال)
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.clear()
+        self.theme_combo.addItems(
+            [theme_label(k, get_lang()) for k in self._theme_keys])
+        cur = self.cfg.get("theme", DEFAULT_THEME)
+        self.theme_combo.setCurrentIndex(
+            self._theme_keys.index(cur) if cur in self._theme_keys else 0)
+        self.theme_combo.blockSignals(False)
+        self.tray_check.setText(tr("set_tray"))
+        if self._tray is not None:
+            self._tray_act_show.setText(tr("tray_show"))
+            self._tray_act_quit.setText(tr("tray_quit"))
         for h in getattr(self, "_set_heads", []):
             h.setText(tr(h.property("tkey")))
             h.setAlignment(align)
-        self.lbl_telegram.setText(tr("set_telegram"))
-        self.btn_tg_copy.setText(tr("set_copy"))
-        self.btn_tg_open.setText(tr("set_telegram_open"))
+        self.btn_telegram.setText(tr("set_telegram_btn"))
         self.btn_guide.setText(tr("set_open_guide"))
+        self.btn_update_check.setText(tr("upd_btn"))
         self._retranslate_scan()
         self._update_delay_card()
         self.refresh_procs()
@@ -632,17 +662,17 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         AboutDialog(self).exec()
 
     def show_update(self):
-        """بررسی دستی آپدیت از دکمه‌ی سربرگ."""
+        """بررسی دستی آپدیت از بخش تنظیمات."""
         import updater
         from PyQt6.QtWidgets import QMessageBox
-        self.btn_update.setText(tr("upd_checking"))
-        self.btn_update.setEnabled(False)
+        self.btn_update_check.setText(tr("upd_checking"))
+        self.btn_update_check.setEnabled(False)
         try:
             has, info = updater.check_for_update()
         except Exception:
             has, info = False, "خطا در بررسی آپدیت."
-        self.btn_update.setText(tr("upd_btn"))
-        self.btn_update.setEnabled(True)
+        self.btn_update_check.setText(tr("upd_btn"))
+        self.btn_update_check.setEnabled(True)
         if has and isinstance(info, dict):
             updater.show_update_available_dialog(self, info)
         elif isinstance(info, str) and info:
@@ -662,13 +692,22 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             return
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(p))
 
+    def _sync_nav(self, idx):
+        """سینک دکمه‌ی فعال ناوبری با تب جاری."""
+        if 0 <= idx < len(self._nav_btns):
+            self._nav_btns[idx].setChecked(True)
+
     def _refresh_pill(self):
+        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
         if self.streaming:
-            self.pill.setText(tr("status_streaming"))
+            dl = self.cfg.get("mode", "stream") == "download"
+            self.pill.setText(tr("status_downloading" if dl
+                                 else "status_streaming"))
             self.pill.setStyleSheet(f"background-color: #3A0F1E; color: {RED};")
         else:
             self.pill.setText(tr("status_ready"))
-            self.pill.setStyleSheet(f"background-color: #1B2940; color: {MUTED};")
+            self.pill.setStyleSheet(
+                f"background-color: {tc['btn_hover']}; color: {tc['muted']};")
         # انیمیشن نرم تغییر وضعیت
         eff = QtWidgets.QGraphicsOpacityEffect(self.pill)
         self.pill.setGraphicsEffect(eff)
@@ -681,11 +720,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._pill_anim = anim
 
     def _refresh_stream_btn(self):
+        dl = self.cfg.get("mode", "stream") == "download"
         if self.streaming:
-            self.btn_stream.setText(tr("stream_stop"))
+            self.btn_stream.setText(tr("dl_stop" if dl else "stream_stop"))
             self.btn_stream.setObjectName("Stop")
         else:
-            self.btn_stream.setText(tr("stream_start"))
+            self.btn_stream.setText(tr("dl_start" if dl else "stream_start"))
             self.btn_stream.setObjectName("Go")
         self.btn_stream.setStyleSheet("")
 
@@ -783,7 +823,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 lname = name.lower()
                 if lname in NEVER_TOUCH or lname in self.safelist:
                     continue
-                kind = "hog" if lname in HOG_PATTERNS else "other"
+                kind = ("hog" if is_hog(lname, self.cfg.get("mode", "stream"))
+                        else "other")
                 hog_key = "hog_" + lname
                 rows.append({
                     "pid": int(pid), "name": name,
@@ -810,7 +851,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 self.proc_table.setItem(r, 4, self._tcell("—", numeric=True))
                 self._set_kill_button(r, p["pid"])
             return
-        procs = [p for p in iter_processes(self.safelist) if p["kind"] != "safe"]
+        procs = [p for p in iter_processes(self.safelist, self.cfg.get("mode", "stream"))
+                 if p["kind"] != "safe"]
         if not procs:
             self._show_table_empty()
             return
@@ -908,6 +950,8 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_srv_import.clicked.connect(self._scan_import)
         self.btn_srv_copy = QtWidgets.QPushButton()
         self.btn_srv_copy.clicked.connect(self._scan_copy_rtmp)
+        # مثل StreamScanner: تا اسکن موفق تمام نشود غیرفعال
+        self.btn_srv_copy.setEnabled(False)
         mrow.addWidget(self.btn_srv_add)
         mrow.addWidget(self.btn_srv_edit)
         mrow.addWidget(self.btn_srv_del)
@@ -1008,6 +1052,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.scan_table.setRowCount(0)
             self.scan_hint.setText(tr("scan_no_servers_hint"))
             self.scan_best.setVisible(False)
+            self.btn_srv_copy.setEnabled(False)
             return
         self.scan_hint.setText(tr("scan_hint"))
         rows = []
@@ -1032,6 +1077,17 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         s, r = best
         url = server_rtmp_url(s)
         txt = f"{tr('scan_best')}: {s.get('name')}"
+        # جزئیات بهترین سرور مثل StreamScanner: پینگ، لاست، TCP
+        det = []
+        if r.get("ping_ms") is not None:
+            det.append(f"{tr('scan_col_ping')} {fa_digits(round(r['ping_ms']))}ms")
+        if r.get("loss") is not None:
+            det.append(f"{tr('scan_col_loss')} {fa_digits(round(r['loss']))}%")
+        if r.get("tcp_ms") is not None:
+            det.append(f"{tr('scan_col_tcp')} {fa_digits(round(r['tcp_ms']))}ms")
+        if det:
+            sep = "، " if get_lang() == "fa" else ", "
+            txt += " — " + sep.join(det)
         if url:
             txt += f" — {url}"
         self.scan_best.setText(txt)
@@ -1066,6 +1122,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.btn_scan_all.setEnabled(False)
         self.btn_scan_one.setEnabled(False)
         self.btn_scan_stop.setEnabled(True)
+        self.btn_srv_copy.setEnabled(False)
         self.scan_lbl.setText(tr("scan_scanning"))
         self._scan_thread = ScanThread(servers, parent=self)
         self._scan_thread.progress.connect(self._on_scan_progress)
@@ -1102,6 +1159,14 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, tr("tab_scan"), tr("scan_none_up"))
         else:
             self.log(f"⚡ {len(ups)} {tr('scan_up')}")
+            # مثل StreamScanner: دکمه‌ی کپی بعد از اسکن موفق فعال می‌شود
+            self.btn_srv_copy.setEnabled(True)
+            # بهترین سرور (ردیف اول جدول = بهترین امتیاز) خودکار انتخاب می‌شود
+            if self.scan_table.rowCount() > 0:
+                self.scan_table.selectRow(0)
+                self.scan_table.scrollToItem(
+                    self.scan_table.item(0, 0),
+                    QtWidgets.QAbstractItemView.ScrollHint.EnsureVisible)
 
     def _scan_stop(self):
         if self._scan_thread is not None:
@@ -1252,6 +1317,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.ping_hint.setObjectName("Sub")
         self.ping_hint.setWordWrap(True)
         lay.addWidget(self.ping_hint)
+        self.ping_check = QtWidgets.QCheckBox()
+        self.ping_check.setChecked(bool(self.cfg.get("ping_enabled", True)))
+        self.ping_check.setToolTip(tr("ping_server_hint"))
+        lay.addWidget(self.ping_check)
         self.btn_save = QtWidgets.QPushButton()
         self.btn_save.clicked.connect(self._save_settings)
         lay.addWidget(self.btn_save)
@@ -1272,26 +1341,36 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         lrow.addWidget(self.lang_combo, 1)
         lay.addLayout(lrow)
 
+        # — بخش تم —
+        self._set_heads.append(self._set_section(lay, "set_sec_theme"))
+        trow2 = QtWidgets.QHBoxLayout()
+        self.lbl_theme = QtWidgets.QLabel()
+        self.theme_combo = QtWidgets.QComboBox()
+        self._theme_keys = theme_keys()
+        self.theme_combo.addItems(
+            [theme_label(k, get_lang()) for k in self._theme_keys])
+        cur = self.cfg.get("theme", DEFAULT_THEME)
+        self.theme_combo.setCurrentIndex(
+            self._theme_keys.index(cur) if cur in self._theme_keys else 0)
+        self.theme_combo.currentIndexChanged.connect(self._theme_combo_changed)
+        trow2.addWidget(self.lbl_theme)
+        trow2.addWidget(self.theme_combo, 1)
+        lay.addLayout(trow2)
+
+        # — بخش عمومی —
+        self._set_heads.append(self._set_section(lay, "set_sec_general"))
+        self.tray_check = QtWidgets.QCheckBox()
+        self.tray_check.setChecked(bool(self.cfg.get("tray", False)))
+        self.tray_check.toggled.connect(self._tray_toggled)
+        lay.addWidget(self.tray_check)
+
         # — بخش پشتیبانی (تلگرام) —
         self._set_heads.append(self._set_section(lay, "set_sec_contact"))
-        trow = QtWidgets.QHBoxLayout()
-        self.lbl_telegram = QtWidgets.QLabel()
-        self.tg_link = QtWidgets.QLabel(
-            '<a href="https://t.me/tha_arf" style="color:#00E5FF;">@tha_arf</a>')
-        self.tg_link.setOpenExternalLinks(True)
-        self.tg_link.setTextInteractionFlags(
-            QtCore.Qt.TextInteractionFlag.TextBrowserInteraction)
-        self.btn_tg_copy = QtWidgets.QPushButton()
-        self.btn_tg_copy.clicked.connect(self._copy_telegram)
-        self.btn_tg_open = QtWidgets.QPushButton()
-        self.btn_tg_open.clicked.connect(
+        self.btn_telegram = QtWidgets.QPushButton()
+        self.btn_telegram.clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(
                 QtCore.QUrl("https://t.me/tha_arf")))
-        trow.addWidget(self.lbl_telegram)
-        trow.addWidget(self.tg_link, 1)
-        trow.addWidget(self.btn_tg_copy)
-        trow.addWidget(self.btn_tg_open)
-        lay.addLayout(trow)
+        lay.addWidget(self.btn_telegram)
 
         # — بخش راهنما —
         self._set_heads.append(self._set_section(lay, "set_sec_help"))
@@ -1308,16 +1387,16 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self.about_view.setMinimumHeight(140)
         lay.addWidget(self.about_view)
 
+        # — بخش به‌روزرسانی —
+        self._set_heads.append(self._set_section(lay, "set_sec_update"))
+        self.btn_update_check = QtWidgets.QPushButton()
+        self.btn_update_check.clicked.connect(self.show_update)
+        lay.addWidget(self.btn_update_check)
+
         lay.addStretch(1)
         scroll.setWidget(inner)
         outer.addWidget(scroll)
         self.tabs.addTab(w, "")
-
-    def _copy_telegram(self):
-        QtWidgets.QApplication.clipboard().setText("@tha_arf")
-        self.btn_tg_copy.setText(tr("set_copied"))
-        QtCore.QTimer.singleShot(
-            1500, lambda: self.btn_tg_copy.setText(tr("set_copy")))
 
     def _lang_combo_changed(self, idx):
         new = "fa" if idx == 0 else "en"
@@ -1325,14 +1404,42 @@ class LagSliceWindow(QtWidgets.QMainWindow):
             self.toggle_lang()
             self.lang_combo.setCurrentIndex(0 if new == "fa" else 1)
 
+    def _theme_combo_changed(self, idx):
+        if 0 <= idx < len(self._theme_keys):
+            self.apply_theme(self._theme_keys[idx])
+
+    def apply_theme(self, key):
+        """اعمال تم و ذخیره در کانفیگ."""
+        if key not in theme_keys():
+            key = DEFAULT_THEME
+        self.cfg["theme"] = key
+        save_config(self.cfg)
+        QtWidgets.QApplication.instance().setStyleSheet(build_qss(key))
+        self.theme_combo.blockSignals(True)
+        self.theme_combo.setCurrentIndex(self._theme_keys.index(key))
+        self.theme_combo.blockSignals(False)
+
+    def _tray_toggled(self, on):
+        self.cfg["tray"] = bool(on)
+        save_config(self.cfg)
+        self._setup_tray()
+
     def _save_settings(self):
         servers = [s.strip() for s in self.server_edit.text().split(",") if s.strip()]
         self.cfg["servers"] = servers or ["8.8.8.8"]
         self.cfg["bitrate_mbps"] = float(self.bitrate_spin.value())
+        self.cfg["ping_enabled"] = bool(self.ping_check.isChecked())
         save_config(self.cfg)
+        self._apply_ping_visibility()
         self.log(tr("log_settings_saved"))
 
+    def _apply_ping_visibility(self):
+        """نمایش/مخفی‌سازی کارت پینگ بر اساس تاگل تنظیمات."""
+        self.card_ping.setVisible(bool(self.cfg.get("ping_enabled", True)))
+
     def _servers(self):
+        if not self.cfg.get("ping_enabled", True):
+            return []
         return self.cfg.get("servers", ["8.8.8.8"])
 
     # ---------- تب لاگ ----------
@@ -1362,28 +1469,84 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 extra = ""
             self.card_ping.set(fa_digits(f'{s["ping_ms"]:.0f}') + " ms" + extra)
         else:
-            self.card_ping.set(tr("disconnected"), RED)
-        self._last_delay_key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
+            tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
+            self.card_ping.set(tr("disconnected"), tc["red"])
+        if self.cfg.get("mode", "stream") == "download":
+            # مجموع دانلود لحظه‌ای رقبای دانلود (به مگابیت‌برثانیه)
+            comp_bps = 0.0
+            for pid, e in (s.get("per_proc") or {}).items():
+                try:
+                    name = (pid_to_name(int(pid)) or "").lower()
+                except Exception:
+                    continue
+                if not name or name in self.safelist:
+                    continue
+                if is_hog(name, "download"):
+                    try:
+                        comp_bps += float(e.get("down_bps", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+            self._last_comp_down_mbps = comp_bps / 1e6
+        else:
+            self._last_delay_key = delay_health(s["up_mbps"], float(self.cfg.get("bitrate_mbps", 8.0)))
         self._update_delay_card()
 
     def _update_delay_card(self):
+        if self.cfg.get("mode", "stream") == "download":
+            self.card_delay.set_name_key("stat_competitors")
+            self.card_delay.setToolTip(tr("tip_competitors"))
+            mbps = getattr(self, "_last_comp_down_mbps", 0.0)
+            color = GREEN if mbps < 0.5 else (AMBER if mbps < 5 else RED)
+            self.card_delay.set(fa_digits(f"{mbps:.1f}") + " Mbps", color)
+            return
+        self.card_delay.set_name_key("stat_delay")
         key = self._last_delay_key
-        color = {"good": GREEN, "warn": AMBER, "bad": RED, "unknown": MUTED}[key]
+        tc = theme_colors(self.cfg.get("theme", DEFAULT_THEME))
+        color = {"good": tc["green"], "warn": tc["amber"],
+                 "bad": tc["red"], "unknown": tc["muted"]}[key]
         self.card_delay.set(tr("delay_" + key), color)
         self.card_delay.setToolTip(tr("delay_" + key + "_d"))
 
-    # ---------- حالت استریم ----------
+    # ---------- سوییچ حالت: استریم / دانلود ----------
+    def set_mode(self, mode):
+        if mode == self.cfg.get("mode", "stream"):
+            return
+        self.cfg["mode"] = mode
+        save_config(self.cfg)
+        self._refresh_mode_buttons()
+        self._refresh_stream_btn()
+        self._update_delay_card()
+        self.refresh_procs()
+        self.log(tr("log_mode_download" if mode == "download"
+                     else "log_mode_stream"))
+
+    def _refresh_mode_buttons(self):
+        mode = self.cfg.get("mode", "stream")
+        for btn, m in ((self.btn_mode_stream, "stream"),
+                       (self.btn_mode_download, "download")):
+            if m == mode:
+                btn.setStyleSheet(
+                    f"border: 2px solid {CYAN}; background-color: #1B2940;")
+            else:
+                btn.setStyleSheet("")
+
+    # ---------- حالت استریم / بهینه‌سازی دانلود ----------
     def toggle_stream(self):
+        mode = self.cfg.get("mode", "stream")
+        dl = mode == "download"
         if not self.streaming:
             # تأیید قبل از کار خطرناک: بستن دسته‌جمعی برنامه‌ها
-            victims = [p for p in iter_processes(self.safelist) if p["kind"] == "hog"]
+            victims = [p for p in iter_processes(self.safelist, mode)
+                       if p["kind"] == "hog"]
             if victims:
                 names = ", ".join(p["name"] for p in victims[:8])
                 if len(victims) > 8:
                     names += f" (+{fa_digits(len(victims) - 8)})"
                 box = QtWidgets.QMessageBox(self)
-                box.setWindowTitle(tr("stream_confirm_title"))
-                box.setText(tr("stream_confirm_msg").format(
+                box.setWindowTitle(tr("dl_confirm_title" if dl
+                                      else "stream_confirm_title"))
+                box.setText(tr("dl_confirm_msg" if dl
+                               else "stream_confirm_msg").format(
                     n=fa_digits(len(victims)), names=names))
                 box.setStandardButtons(
                     QtWidgets.QMessageBox.StandardButton.Yes
@@ -1394,10 +1557,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                     tr("stream_confirm_no"))
                 box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
                 if box.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
-                    self.log(tr("log_stream_cancel"))
+                    self.log(tr("log_dl_cancel" if dl else "log_stream_cancel"))
                     return
-            self.log(tr("log_stream_on"))
-            killed, skipped = stream_mode_cleanup(self.safelist)
+            self.log(tr("log_dl_on" if dl else "log_stream_on"))
+            killed, skipped = stream_mode_cleanup(self.safelist, mode)
             for name, key, param in killed:
                 self.log("🔥 " + self._fmt_kill(name, key, param))
             for name, key, param in skipped:
@@ -1406,12 +1569,10 @@ class LagSliceWindow(QtWidgets.QMainWindow):
                 self.log(tr("log_nothing"))
             self.streaming = True
             self._refresh_stream_btn()
-            self._refresh_pill()
         else:
             self.streaming = False
             self._refresh_stream_btn()
-            self._refresh_pill()
-            self.log(tr("log_stream_off"))
+            self.log(tr("log_dl_off" if dl else "log_stream_off"))
 
     @staticmethod
     def _fmt_kill(name, key, param):
@@ -1422,6 +1583,12 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         return f"{name}: {tr(key)}"
 
     def closeEvent(self, event):
+        # حالت سینی سیستم: بستن پنجره فقط مخفی‌اش می‌کند
+        if (self.cfg.get("tray", False) and not self._force_quit
+                and self._tray is not None and self._tray.isVisible()):
+            event.ignore()
+            self.hide()
+            return
         if self._scan_thread is not None:
             self._scan_thread.stop()
             self._scan_thread.wait(3000)
@@ -1438,12 +1605,16 @@ def main():
         _p = asset_path(_f)
         if os.path.exists(_p):
             QtGui.QFontDatabase.addApplicationFont(_p)
-    # جهت اولیه از کانفیگ
-    cfg_lang = load_config().get("lang", "fa")
+    # جهت و تم اولیه از کانفیگ
+    _cfg = load_config()
+    cfg_lang = _cfg.get("lang", "fa")
     app.setLayoutDirection(
         QtCore.Qt.LayoutDirection.RightToLeft if cfg_lang == "fa"
         else QtCore.Qt.LayoutDirection.LeftToRight)
-    app.setStyleSheet(QSS)
+    app.setStyleSheet(build_qss(_cfg.get("theme", DEFAULT_THEME)))
+    # آیکون برنامه برای تسک‌بار و سینی سیستم
+    if os.path.exists(LOGO_PATH):
+        app.setWindowIcon(QtGui.QIcon(LOGO_PATH))
     win = LagSliceWindow()
     win.show()
 
