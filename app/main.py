@@ -262,6 +262,7 @@ class StatCard(QtWidgets.QFrame):
         """تعویض لیبل کارت (برای حالت دانلود/استریم)."""
         self._name_key = key
         self.retranslate()
+        rtl = get_lang() == "fa"
         self.val_lbl.setLayoutDirection(QtCore.Qt.LayoutDirection.LeftToRight)
         self.val_lbl.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight if rtl
