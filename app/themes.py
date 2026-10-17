@@ -121,6 +121,7 @@ QPushButton#Go {{ border-color: {c['green']}; font-size: 15px; padding: 14px; }}
 QPushButton#Stop {{ border-color: {c['red']}; font-size: 15px; padding: 14px; }}
 QPushButton#Danger {{ border-color: {c['accent2']}; }}
 QPushButton#Lang {{ border-color: {c['accent2']}; padding: 6px 14px; }}
+QPushButton#Lang:checked {{ border-color: {c['accent']}; background-color: {c['btn_hover']}; color: {c['accent']}; }}
 /* دکمه‌های بیرون جدول: پدینگ (داخل QTableWidget در RTL باگ دارد) */
 QDialog QPushButton, QTabWidget QPushButton {{ padding: 10px 18px; }}
 QTabWidget::pane {{ border: 1px solid {c['border']}; border-radius: 8px; }}
