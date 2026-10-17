@@ -236,6 +236,13 @@ def save_config(cfg):
         json.dump(cfg, fh, ensure_ascii=False, indent=2)
 
 
+class NoWheelComboBox(QtWidgets.QComboBox):
+    """کمبوباکس که اسکرول موس را نادیده می‌گیرد؛ انتخاب فقط با کلیک و باز شدن لیست."""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class StatCard(QtWidgets.QFrame):
     def __init__(self, name_key, parent=None):
         super().__init__(parent)
@@ -1334,7 +1341,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._set_heads.append(self._set_section(lay, "set_sec_lang"))
         lrow = QtWidgets.QHBoxLayout()
         self.lbl_lang = QtWidgets.QLabel()
-        self.lang_combo = QtWidgets.QComboBox()
+        self.lang_combo = NoWheelComboBox()
         self.lang_combo.addItems(["فارسی", "English"])
         self.lang_combo.setCurrentIndex(0 if get_lang() == "fa" else 1)
         self.lang_combo.currentIndexChanged.connect(self._lang_combo_changed)
@@ -1346,7 +1353,7 @@ class LagSliceWindow(QtWidgets.QMainWindow):
         self._set_heads.append(self._set_section(lay, "set_sec_theme"))
         trow2 = QtWidgets.QHBoxLayout()
         self.lbl_theme = QtWidgets.QLabel()
-        self.theme_combo = QtWidgets.QComboBox()
+        self.theme_combo = NoWheelComboBox()
         self._theme_keys = theme_keys()
         self.theme_combo.addItems(
             [theme_label(k, get_lang()) for k in self._theme_keys])
