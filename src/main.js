@@ -2,7 +2,7 @@
 // بیرون از تائوری (پیش‌نمایش مرورگر) داده‌ی نمونه نشان داده می‌شود.
 const invoke = window.__TAURI__?.core?.invoke;
 
-const APP_VERSION = "0.6.0";
+const APP_VERSION = "0.7.0";
 const SETTINGS_KEY = "lagslice.settings.v1";
 
 // پیش‌فرض‌ها دقیقاً مثل load_config نسخه‌ی پایتون.
@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   ping_enabled: true,
   theme: "lagslice",
   tray: false,
+  updateMode: "notify",
   mode: "stream",
 };
 
@@ -140,6 +141,21 @@ const STRINGS = {
     update_latest: "نسخه‌ی شما ({ver}) به‌روز است ✅",
     update_available: "نسخه‌ی تازه موجود است: {ver} — از ریپوی گیت‌هاب بگیرید.",
     update_err: "بررسی به‌روزرسانی ناموفق بود (اتصال/پاسخ گیت‌هاب).",
+    upd_mode: "حالت به‌روزرسانی",
+    upd_mode_auto: "خودکار (دانلود بی‌صدا)",
+    upd_mode_notify: "اطلاع‌رسانی (با تأیید من)",
+    upd_mode_off: "خاموش (فقط دستی)",
+    upd_pick_file: "بارگذاری فایل آپدیت",
+    upd_download: "دانلود آپدیت",
+    upd_downloading: "در حال دانلود آپدیت… {pct}٪",
+    upd_cancel: "لغو دانلود",
+    upd_ready_install: "🔄 آپدیت آماده‌ی نصب است — نصب و راه‌اندازی مجدد",
+    upd_available2: "نسخه‌ی تازه موجود است: {ver} ({size})",
+    upd_mandatory: "این به‌روزرسانی اجباری است.",
+    upd_installing: "در حال نصب… برنامه بسته و دوباره باز می‌شود.",
+    upd_applied_ok: "✅ به‌روزرسانی انجام شد: {prev} ← {new}",
+    upd_applied_fail: "⚠️ به‌روزرسانی قبلی ناموفق بود: {detail}",
+    upd_bad_file: "این فایل بسته‌ی آپدیت معتبر LagSlice نیست.",
   },
   en: {
     subtitle: "Bandwidth management between game and stream",
@@ -238,6 +254,21 @@ const STRINGS = {
     update_latest: "You are up to date ({ver}) ✅",
     update_available: "A new version is available: {ver} — get it from the GitHub repo.",
     update_err: "Update check failed (GitHub connection/response).",
+    upd_mode: "Update mode",
+    upd_mode_auto: "Automatic (silent download)",
+    upd_mode_notify: "Notify (with my confirmation)",
+    upd_mode_off: "Off (manual only)",
+    upd_pick_file: "Load update file",
+    upd_download: "Download update",
+    upd_downloading: "Downloading update… {pct}%",
+    upd_cancel: "Cancel download",
+    upd_ready_install: "🔄 Update ready — install & restart",
+    upd_available2: "A new version is available: {ver} ({size})",
+    upd_mandatory: "This update is mandatory.",
+    upd_installing: "Installing… the app will close and reopen.",
+    upd_applied_ok: "✅ Updated: {prev} → {new}",
+    upd_applied_fail: "⚠️ The previous update failed: {detail}",
+    upd_bad_file: "This file is not a valid LagSlice update package.",
   },
 };
 
@@ -474,26 +505,146 @@ document.getElementById("openGuide").addEventListener("click", () => {
   document.getElementById("guideMsg").textContent = t("guide_missing");
 });
 
-// بررسی دستی به‌روزرسانی از ریلیزهای گیت‌هاب (مثل show_update نسخه‌ی پایتون).
-document.getElementById("checkUpdate").addEventListener("click", async () => {
-  const msg = document.getElementById("updateMsg");
-  msg.textContent = t("update_checking");
+// ---------- موتور آپدیت v2 (فید ثابت + دانلود قابل‌ادامه + هلپر نصب) ----------
+// دقیقاً مدل شیرین‌حساب: check_update2 ← download_update2 (رویداد پیشرفت
+// update-progress2، کنسل با نگه‌داشتن ‎.part‎) ← apply_update2 (هلپر + ری‌استارت).
+const tauriEvent = window.__TAURI__?.event;
+let updInfo = null;
+let updDownloading = false;
+
+const updMsg = () => document.getElementById("updateMsg");
+const updEl = (id) => document.getElementById(id);
+
+function updSize(bytes) {
+  if (!bytes) return "";
+  return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(bytes / 1024)) + " KB";
+}
+
+function updShowReady() {
+  updEl("downloadUpdate").classList.add("hidden");
+  updEl("cancelDownload").classList.add("hidden");
+  updEl("applyUpdate").classList.remove("hidden");
+  updEl("updateProgress").classList.add("hidden");
+}
+
+async function updDownload() {
+  if (!invoke || updDownloading) return;
+  updDownloading = true;
+  updEl("downloadUpdate").classList.add("hidden");
+  updEl("applyUpdate").classList.add("hidden");
+  updEl("cancelDownload").classList.remove("hidden");
+  updEl("updateProgress").classList.remove("hidden");
+  updMsg().textContent = fill(t("upd_downloading"), { pct: 0 });
   try {
-    const res = await fetch("https://api.github.com/repos/thaarfknight-star/LagSlice/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" },
-    });
-    if (!res.ok) throw new Error(String(res.status));
-    const rel = await res.json();
-    const latest = String(rel.tag_name || "").replace(/^lagslice-rs-v/, "").replace(/^v/, "");
-    if (!latest) throw new Error("no tag");
-    msg.textContent =
-      latest === APP_VERSION
-        ? fill(t("update_latest"), { ver: APP_VERSION })
-        : fill(t("update_available"), { ver: latest });
+    await invoke("download_update2");
+    updShowReady();
+  } catch (e) {
+    updMsg().textContent = t("error_prefix") + e;
+    updEl("cancelDownload").classList.add("hidden");
+    updEl("updateProgress").classList.add("hidden");
+    if (updInfo) updEl("downloadUpdate").classList.remove("hidden");
+  } finally {
+    updDownloading = false;
+  }
+}
+
+async function updCheck(manual) {
+  if (!invoke) return;
+  if (manual) updMsg().textContent = t("update_checking");
+  try {
+    const info = await invoke("check_update2");
+    if (!info) {
+      if (manual) updMsg().textContent = fill(t("update_latest"), { ver: APP_VERSION });
+      return;
+    }
+    updInfo = info;
+    updMsg().textContent =
+      fill(t("upd_available2"), { ver: info.version, size: updSize(info.size) }) +
+      (info.mandatory ? " " + t("upd_mandatory") : "");
+    const notes = updEl("updateNotes");
+    if (info.notes_fa) {
+      notes.textContent = info.notes_fa;
+      notes.classList.remove("hidden");
+    }
+    if (settings.updateMode === "auto" && !manual) {
+      updDownload();
+    } else {
+      updEl("downloadUpdate").classList.remove("hidden");
+    }
   } catch {
-    msg.textContent = t("update_err");
+    if (manual) updMsg().textContent = t("update_err");
+  }
+}
+
+document.getElementById("checkUpdate").addEventListener("click", () => updCheck(true));
+
+document.getElementById("downloadUpdate").addEventListener("click", updDownload);
+
+document.getElementById("cancelDownload").addEventListener("click", async () => {
+  if (invoke) await invoke("cancel_update_download2").catch(() => {});
+});
+
+document.getElementById("applyUpdate").addEventListener("click", async () => {
+  if (!invoke) return;
+  updMsg().textContent = t("upd_installing");
+  try {
+    await invoke("apply_update2");
+  } catch (e) {
+    updMsg().textContent = t("error_prefix") + e;
   }
 });
+
+document.getElementById("pickUpdateFile").addEventListener("click", async () => {
+  if (!invoke) return;
+  try {
+    const path = await invoke("open_update_file_dialog");
+    if (!path) return;
+    updMsg().textContent = t("upd_installing");
+    await invoke("apply_local_update", { path });
+  } catch (e) {
+    updMsg().textContent = t("error_prefix") + e;
+  }
+});
+
+document.getElementById("updateMode").addEventListener("change", (e) => {
+  settings.updateMode = e.target.value;
+  saveSettings();
+});
+
+if (tauriEvent?.listen) {
+  tauriEvent.listen("update-progress2", (ev) => {
+    const p = ev.payload || {};
+    const bar = updEl("updateProgress");
+    if (bar) {
+      bar.classList.remove("hidden");
+      bar.firstElementChild.style.width = (p.percent || 0) + "%";
+    }
+    if (updDownloading) updMsg().textContent = fill(t("upd_downloading"), { pct: p.percent || 0 });
+  });
+}
+
+// گزارش آپدیت قبلی + چک خودکار بر اساس حالت انتخابی (۱۵ ثانیه بعد از اجرا؛
+// حالت auto هر ۶ ساعت دوباره و دانلود بی‌صدا).
+async function updStartup() {
+  if (!invoke) return;
+  updEl("updateMode").value = settings.updateMode || "notify";
+  try {
+    const report = await invoke("get_update_report");
+    if (report?.status === "ok") {
+      updMsg().textContent = fill(t("upd_applied_ok"), { prev: report.prev_version, new: report.new_version });
+      if (report.changelog) {
+        const notes = updEl("updateNotes");
+        notes.textContent = report.changelog;
+        notes.classList.remove("hidden");
+      }
+    } else if (report && report.status !== "ok") {
+      updMsg().textContent = fill(t("upd_applied_fail"), { detail: report.detail || report.status });
+    }
+  } catch {}
+  if (settings.updateMode === "off") return;
+  setTimeout(() => updCheck(false), 15000);
+  if (settings.updateMode === "auto") setInterval(() => updCheck(false), 6 * 3600 * 1000);
+}
 
 // ---------- اسکنر سرورهای استریم (StreamScanner) ----------
 let scanList = [];
@@ -737,6 +888,7 @@ fillSettingsForm();
 applyTheme();
 applyLang();
 pushTraySetting();
+updStartup();
 loadScanServers();
 refreshRates();
 refreshPing();

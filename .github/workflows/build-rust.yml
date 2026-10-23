@@ -31,6 +31,15 @@ jobs:
       - name: Install Tauri CLI
         run: npm install
 
+      # ساخت هلپر آپدیت از کرِیت جدا (updater/) و گذاشتنش با پسوند تریپل
+      # تا از طریق externalBin داخل Setup نصب شود (کنار exe اصلی).
+      - name: Build updater helper
+        shell: bash
+        run: |
+          cargo build --release --manifest-path updater/Cargo.toml
+          cp updater/target/release/LagSliceUpdater.exe "src-tauri/binaries/LagSliceUpdater-x86_64-pc-windows-msvc.exe"
+          echo "Helper built and staged as sidecar."
+
       - name: Build and publish draft release (NSIS Setup)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -42,3 +51,82 @@ jobs:
           releaseBody: "نسخه‌ی Rust + Tauri — فایل Setup (NSIS) و exe پرتابل در فایل‌های زیر هستند."
           releaseDraft: true
           prerelease: false
+
+      # فایل‌های خام نصب (exe + هلپر) برای ساخت بسته‌های آپدیت در جاب بعد
+      - name: Upload app binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-binaries
+          path: |
+            src-tauri/target/release/lagslice.exe
+            src-tauri/target/release/LagSliceUpdater.exe
+          if-no-files-found: error
+
+  # ساخت بسته‌های آپدیت (کامل + دلتا) و انتشار فید ثابت — مدل شیرین‌حساب.
+  release-update:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download app binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: app-binaries
+          path: app-binaries
+
+      - name: Stage install files
+        run: |
+          mkdir -p stage
+          cp app-binaries/lagslice.exe app-binaries/LagSliceUpdater.exe stage/
+          cp version.txt CHANGELOG_FA.md LICENSE LICENSE-MIT LICENSE-APACHE stage/
+          ls -la stage/
+
+      - name: Fetch previous release manifest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          mkdir -p prev prev-rel
+          PREV_TAG=$(gh release list --limit 30 --json tagName --jq "[.[] | select(.tagName | startswith(\"lagslice-rs-v\")) | .tagName | select(. != \"lagslice-rs-v$VERSION\")] | first // empty")
+          echo "Previous release: $PREV_TAG"
+          if [ -n "$PREV_TAG" ]; then
+            if gh release download "$PREV_TAG" --pattern 'LagSlice-Update-*.zip' --dir prev-rel; then
+              FULL_ZIP=$(ls prev-rel/LagSlice-Update-v*.zip | grep -v -- '-from-' | head -n 1 || true)
+              if [ -n "$FULL_ZIP" ]; then unzip -o -j "$FULL_ZIP" manifest.json -d prev/ || true; fi
+            fi
+          fi
+          ls -la prev/ || true
+
+      - name: Build update packages and feed
+        run: |
+          PREV_ARG=""
+          if [ -f prev/manifest.json ]; then PREV_ARG="--prev-manifest prev/manifest.json"; fi
+          python3 tools/make_feed.py --build-dir stage --version "$VERSION" \
+            --changelog CHANGELOG_FA.md --repo thaarfknight-star/LagSlice \
+            $PREV_ARG --out-dir update-dist
+          ls -la update-dist/
+
+      - name: Upload update packages to the version release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "lagslice-rs-v$VERSION" update-dist/LagSlice-Update-*.zip --clobber
+
+      - name: Publish the version release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "lagslice-rs-v$VERSION" --draft=false
+
+      - name: Publish the update feed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view update-feed > /dev/null 2>&1 || \
+            gh release create update-feed --prerelease --title "Update Feed" \
+              --notes "فید ثابت موتور آپدیت LagSlice — این ریلیز را حذف نکنید."
+          gh release upload update-feed update-dist/update-feed.json --clobber

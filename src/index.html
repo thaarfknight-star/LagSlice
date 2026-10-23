@@ -435,9 +435,24 @@ SOFTWARE.</pre>
       <!-- به‌روزرسانی -->
       <h3 class="sec-head" data-i18n="set_sec_update">🔄 به‌روزرسانی</h3>
       <div class="row">
+        <label><span data-i18n="upd_mode">حالت به‌روزرسانی</span>
+          <select id="updateMode">
+            <option value="auto" data-i18n="upd_mode_auto">خودکار (دانلود بی‌صدا)</option>
+            <option value="notify" data-i18n="upd_mode_notify">اطلاع‌رسانی (با تأیید من)</option>
+            <option value="off" data-i18n="upd_mode_off">خاموش (فقط دستی)</option>
+          </select>
+        </label>
         <button id="checkUpdate" data-i18n="set_update_check">بررسی به‌روزرسانی</button>
+        <button id="pickUpdateFile" data-i18n="upd_pick_file">بارگذاری فایل آپدیت</button>
       </div>
       <p id="updateMsg" class="msg"></p>
+      <div id="updateNotes" class="update-notes hidden"></div>
+      <div id="updateProgress" class="progress hidden"><i></i></div>
+      <div class="row">
+        <button id="downloadUpdate" class="primary hidden" data-i18n="upd_download">دانلود آپدیت</button>
+        <button id="cancelDownload" class="hidden" data-i18n="upd_cancel">لغو دانلود</button>
+        <button id="applyUpdate" class="primary hidden" data-i18n="upd_ready_install">🔄 آپدیت آماده‌ی نصب است — نصب و راه‌اندازی مجدد</button>
+      </div>
     </section>
   </main>
 

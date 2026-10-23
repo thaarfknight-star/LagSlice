@@ -224,3 +224,7 @@ tr.best-row td { background: rgba(255, 0, 212, 0.10); font-weight: 600; }
 .row .grow { flex: 1; }
 .row textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .active-badge { color: #4ade80; font-weight: 700; font-size: 12px; }
+
+.update-notes { white-space: pre-wrap; background: rgba(56, 189, 248, .08); border: 1px solid rgba(56, 189, 248, .25); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 13px; line-height: 1.9; }
+.progress { height: 8px; border-radius: 99px; background: rgba(148, 163, 184, .18); overflow: hidden; margin: 8px 0; }
+.progress > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #22d3ee, #a78bfa); transition: width .2s; }

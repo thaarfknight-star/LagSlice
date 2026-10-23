@@ -1,6 +1,7 @@
 mod monitor;
 mod qos;
 mod scanner;
+mod updater;
 
 use monitor::{AppRate, Monitor};
 use serde::Serialize;
@@ -301,7 +302,12 @@ pub fn run() {
     // لیست سرورهای اسکنر از دیسک (یا پیش‌فرض).
     let servers = scanner::load_servers();
 
+    // پاک‌سازی فایل‌های ‎.old‎ باقی‌مانده از آپدیت قبلی (موتور آپدیت v2).
+    updater::cleanup_old_files();
+
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(updater::UpdateV2State::default())
         .manage(AppState {
             monitor: Mutex::new(Monitor::new()),
             last_rates: Mutex::new(Vec::new()),
@@ -327,7 +333,14 @@ pub fn run() {
             scan_servers,
             parse_server_link,
             import_server_links,
-            set_close_to_tray
+            set_close_to_tray,
+            updater::check_update2,
+            updater::download_update2,
+            updater::cancel_update_download2,
+            updater::apply_update2,
+            updater::open_update_file_dialog,
+            updater::apply_local_update,
+            updater::get_update_report
         ])
         .setup(|app| {
             // آیکن سینی سیستم با منوی «نمایش / خروج»؛ خروج واقعی از همین

@@ -1,1 +1,51 @@
-{"$schema":"https://schema.tauri.app/config/2","app":{"security":{"csp":null},"windows":[{"height":760,"minHeight":560,"minWidth":900,"resizable":true,"title":"LagSlice | لگ‌اسلایس","width":1180}]},"build":{"frontendDist":"../src"},"bundle":{"active":true,"icon":["icons/icon.ico"],"resources":["../LICENSE","../LICENSE-MIT","../LICENSE-APACHE"],"targets":["nsis"],"windows":{"nsis":{"headerImage":"icons/nsis-header.bmp","installMode":"currentUser","installerIcon":"icons/icon.ico","sidebarImage":"icons/nsis-sidebar.bmp"}}},"identifier":"ir.lagslice.app","productName":"LagSlice","version":"0.6.0"}
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "height": 760,
+        "minHeight": 560,
+        "minWidth": 900,
+        "resizable": true,
+        "title": "LagSlice | لگ‌اسلایس",
+        "width": 1180
+      }
+    ]
+  },
+  "build": {
+    "frontendDist": "../src"
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "../version.txt": "version.txt",
+      "../CHANGELOG_FA.md": "CHANGELOG_FA.md",
+      "../LICENSE": "LICENSE",
+      "../LICENSE-MIT": "LICENSE-MIT",
+      "../LICENSE-APACHE": "LICENSE-APACHE"
+    },
+    "targets": [
+      "nsis"
+    ],
+    "windows": {
+      "nsis": {
+        "headerImage": "icons/nsis-header.bmp",
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "sidebarImage": "icons/nsis-sidebar.bmp"
+      }
+    },
+    "externalBin": [
+      "binaries/LagSliceUpdater"
+    ]
+  },
+  "identifier": "ir.lagslice.app",
+  "productName": "LagSlice",
+  "version": "0.6.0"
+}
