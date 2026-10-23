@@ -57,18 +57,22 @@ fn version_gt(a: &str, b: &str) -> bool {
     parse_version(a) > parse_version(b)
 }
 
-/// نسخه‌ی فعلی از version.txt کنار exe؛ نبودش یعنی نسخه‌ی کامپایل‌شده
+/// نسخه‌ی فعلی: بیشینه‌ی «مهرِ version.txt کنار exe» و نسخه‌ی کامپایل‌شده.
+/// مهر ممکن است کهنه باشد (نصب دستی روی پوشه‌ی قبلی)؛ باینری هیچ‌وقت از
+/// نسخه‌ی واقعی خودش عقب‌تر گزارش نمی‌دهد.
 pub fn current_version() -> String {
+    let compiled = env!("CARGO_PKG_VERSION").to_string();
     if let Some(dir) = exe_dir() {
         if let Ok(text) = std::fs::read_to_string(dir.join("version.txt")) {
             if let Some(tok) = text.split_whitespace().next() {
-                if !tok.is_empty() {
-                    return tok.trim_start_matches('v').to_string();
+                let stamped = tok.trim_start_matches('v').to_string();
+                if !stamped.is_empty() && version_gt(&stamped, &compiled) {
+                    return stamped;
                 }
             }
         }
     }
-    env!("CARGO_PKG_VERSION").to_string()
+    compiled
 }
 
 pub fn exe_dir() -> Option<PathBuf> {

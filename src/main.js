@@ -2,7 +2,9 @@
 // بیرون از تائوری (پیش‌نمایش مرورگر) داده‌ی نمونه نشان داده می‌شود.
 const invoke = window.__TAURI__?.core?.invoke;
 
-const APP_VERSION = "0.7.0";
+let APP_VERSION = "0.9.1";
+// نسخه‌ی واقعی از خود برنامه (جلوگیری از کهنه‌ماندن ثابت دستی)
+window.__TAURI__?.app?.getVersion?.().then((v) => { if (v) APP_VERSION = v; }).catch(() => {});
 const SETTINGS_KEY = "lagslice.settings.v1";
 
 // پیش‌فرض‌ها دقیقاً مثل load_config نسخه‌ی پایتون.

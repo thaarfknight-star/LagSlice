@@ -40,6 +40,14 @@ jobs:
           cp updater/target/release/LagSliceUpdater.exe "src-tauri/binaries/LagSliceUpdater-x86_64-pc-windows-msvc.exe"
           echo "Helper built and staged as sidecar."
 
+      - name: Stamp version.txt from the app version
+        shell: bash
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('src-tauri/tauri.conf.json'))['version'])")
+          printf '%s\n' "$VERSION" > version.txt
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "version.txt stamped: $VERSION"
+
       - name: Build and publish draft release (NSIS Setup)
         uses: tauri-apps/tauri-action@v0
         env:
@@ -120,6 +128,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # بدنه‌ی ریلیز = بخش همین نسخه از CHANGELOG_FA.md (قانون طه: هر تگ باید تغییراتش را بگوید)
+          python3 - <<'PY'
+          import os, re
+          ver = os.environ["VERSION"]
+          text = open("CHANGELOG_FA.md", encoding="utf-8").read()
+          m = re.search(r"(?ms)^## " + re.escape(ver) + r"\b.*?(?=^## |\Z)", text)
+          notes = m.group(0).strip() if m else ("## " + ver)
+          open("release-notes.md", "w", encoding="utf-8").write(notes + "\n")
+          PY
+          gh release edit "lagslice-rs-v$VERSION" --notes-file release-notes.md
           gh release edit "lagslice-rs-v$VERSION" --draft=false
 
       - name: Publish the update feed
