@@ -1,5 +1,6 @@
 mod monitor;
 mod qos;
+mod scanner;
 
 use monitor::{AppRate, Monitor};
 use serde::Serialize;
@@ -14,6 +15,9 @@ struct AppState {
     /// (qos::load_whitelist) و هر تغییری همان لحظه ذخیره می‌شود
     /// (qos::save_whitelist) تا بین اجراها بماند.
     whitelist: Mutex<Vec<String>>,
+    /// لیست سرورهای استریمِ اسکنر — هنگام استارت از دیسک خوانده می‌شود
+    /// (scanner::load_servers) و هر تغییری همان لحظه ذخیره می‌شود.
+    servers: Mutex<Vec<scanner::StreamServer>>,
 }
 
 /// نرخ زنده‌ی آپلود/دانلود هر برنامه (Kbps).
@@ -219,6 +223,32 @@ fn remove_from_whitelist(
     Ok(saved)
 }
 
+/// لیست سرورهای استریم (از حافظه‌ای که هنگام استارت از دیسک پر شده).
+#[tauri::command]
+fn get_servers(state: tauri::State<AppState>) -> Vec<scanner::StreamServer> {
+    state.servers.lock().unwrap().clone()
+}
+
+/// جایگزینی کامل لیست سرورها + ذخیره‌ی فوری روی دیسک.
+#[tauri::command]
+fn set_servers(
+    state: tauri::State<AppState>,
+    servers: Vec<scanner::StreamServer>,
+) -> Result<Vec<scanner::StreamServer>, String> {
+    let saved = scanner::save_servers(&servers)?;
+    *state.servers.lock().unwrap() = saved.clone();
+    Ok(saved)
+}
+
+/// اسکن موازی سرورها (پینگ + TCP + امتیاز) — روی نخ جدا اجرا می‌شود
+/// تا رابط کاربری در طول اسکن فریز نشود.
+#[tauri::command]
+async fn scan_servers(servers: Vec<scanner::StreamServer>) -> Vec<scanner::ProbeResult> {
+    tauri::async_runtime::spawn_blocking(move || scanner::scan_all(&servers))
+        .await
+        .unwrap_or_default()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // بازیابی بعد از کرش — قبل از هر چیز: اگر اجرای قبلی کرش کرده یا
@@ -243,11 +273,15 @@ pub fn run() {
     // لیست سفید از دیسک (یا پیش‌فرض) — ماندگار بین اجراها.
     let whitelist = qos::load_whitelist();
 
+    // لیست سرورهای اسکنر از دیسک (یا پیش‌فرض).
+    let servers = scanner::load_servers();
+
     tauri::Builder::default()
         .manage(AppState {
             monitor: Mutex::new(Monitor::new()),
             last_rates: Mutex::new(Vec::new()),
             whitelist: Mutex::new(whitelist),
+            servers: Mutex::new(servers),
         })
         .invoke_handler(tauri::generate_handler![
             get_app_rates,
@@ -261,7 +295,10 @@ pub fn run() {
             set_whitelist,
             add_to_whitelist,
             remove_from_whitelist,
-            kill_process
+            kill_process,
+            get_servers,
+            set_servers,
+            scan_servers
         ])
         .build(tauri::generate_context!())
         .expect("error while building LagSlice")

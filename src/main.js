@@ -2,7 +2,7 @@
 // بیرون از تائوری (پیش‌نمایش مرورگر) داده‌ی نمونه نشان داده می‌شود.
 const invoke = window.__TAURI__?.core?.invoke;
 
-const APP_VERSION = "0.4.0";
+const APP_VERSION = "0.5.0";
 const SETTINGS_KEY = "lagslice.settings.v1";
 
 // پیش‌فرض‌ها دقیقاً مثل load_config نسخه‌ی پایتون.
@@ -48,7 +48,32 @@ const STRINGS = {
     total_up: "آپلود کل",
     ping_label: "پینگ سرور",
     nav_main: "برنامه‌ها",
+    nav_scan: "اسکن سرورها",
     nav_settings: "تنظیمات",
+    scan_title: "اسکن سرورهای استریم",
+    scan_hint: "سرورها با پینگ و تست اتصال RTMP سنجیده و امتیازدهی می‌شوند؛ امتیاز کمتر یعنی سرور بهتر.",
+    scan_name: "نام",
+    scan_region: "منطقه",
+    scan_host: "هاست",
+    scan_port: "پورت",
+    scan_add: "افزودن سرور",
+    scan_run: "اسکن همه",
+    scan_col_server: "سرور",
+    scan_col_addr: "آدرس RTMP",
+    scan_col_ping: "پینگ (ms)",
+    scan_col_loss: "تلفات",
+    scan_col_tcp: "اتصال TCP (ms)",
+    scan_col_score: "امتیاز",
+    scan_col_status: "وضعیت",
+    scan_empty: "سروری نیست",
+    scanning: "در حال اسکن…",
+    scan_ok: "وصل",
+    scan_down: "قطع",
+    scan_best: "⭐ بهترین سرور: {name} — {url}",
+    scan_use: "انتخاب",
+    scan_use_done: "سرور پینگ روی {host} تنظیم شد.",
+    scan_del: "حذف",
+    scan_need_host: "اول هاست سرور را وارد کن.",
     reserve_title: "رزرو آپلود برای استریم",
     reserve_hint: "مقداری از آپلود را برای Meld Studio رزرو کن؛ بقیه‌ی برنامه‌ها خودکار سقف می‌گیرند تا سهم استریم را نخورند.",
     reserve_label: "رزرو (Mbps)",
@@ -112,7 +137,32 @@ const STRINGS = {
     total_up: "Total upload",
     ping_label: "Server ping",
     nav_main: "Apps",
+    nav_scan: "Server scan",
     nav_settings: "Settings",
+    scan_title: "Stream server scan",
+    scan_hint: "Servers are measured with ping and an RTMP connection test and scored; a lower score means a better server.",
+    scan_name: "Name",
+    scan_region: "Region",
+    scan_host: "Host",
+    scan_port: "Port",
+    scan_add: "Add server",
+    scan_run: "Scan all",
+    scan_col_server: "Server",
+    scan_col_addr: "RTMP address",
+    scan_col_ping: "Ping (ms)",
+    scan_col_loss: "Loss",
+    scan_col_tcp: "TCP connect (ms)",
+    scan_col_score: "Score",
+    scan_col_status: "Status",
+    scan_empty: "No servers",
+    scanning: "Scanning…",
+    scan_ok: "Up",
+    scan_down: "Down",
+    scan_best: "⭐ Best server: {name} — {url}",
+    scan_use: "Use",
+    scan_use_done: "Ping server set to {host}.",
+    scan_del: "Delete",
+    scan_need_host: "Enter the server host first.",
     reserve_title: "Reserve upload for streaming",
     reserve_hint: "Reserve part of your upload for Meld Studio; other apps get capped automatically so they don't eat the stream's share.",
     reserve_label: "Reserve (Mbps)",
@@ -316,14 +366,17 @@ document.getElementById("clearCaps").addEventListener("click", async () => {
   document.getElementById("reserveMsg").textContent = t("caps_cleared");
 });
 
-// ---------- ناوبری دو نما: برنامه‌ها / تنظیمات ----------
+// ---------- ناوبری سه نما: برنامه‌ها / اسکن سرورها / تنظیمات ----------
 function showView(which) {
   document.getElementById("viewMain").classList.toggle("hidden", which !== "main");
+  document.getElementById("viewScan").classList.toggle("hidden", which !== "scan");
   document.getElementById("viewSettings").classList.toggle("hidden", which !== "settings");
   document.getElementById("navMain").classList.toggle("active", which === "main");
+  document.getElementById("navScan").classList.toggle("active", which === "scan");
   document.getElementById("navSettings").classList.toggle("active", which === "settings");
 }
 document.getElementById("navMain").addEventListener("click", () => showView("main"));
+document.getElementById("navScan").addEventListener("click", () => showView("scan"));
 document.getElementById("navSettings").addEventListener("click", () => showView("settings"));
 
 // ---------- زبان و تم ----------
@@ -343,6 +396,7 @@ function applyLang() {
   document.getElementById("aboutText").style.direction = settings.lang === "fa" ? "rtl" : "ltr";
   refreshPing();
   refreshRates();
+  if (scanLoaded) renderScan();
 }
 
 function applyTheme() {
@@ -407,7 +461,7 @@ document.getElementById("checkUpdate").addEventListener("click", async () => {
     });
     if (!res.ok) throw new Error(String(res.status));
     const rel = await res.json();
-    const latest = String(rel.tag_name || "").replace(/^v/, "");
+    const latest = String(rel.tag_name || "").replace(/^lagslice-rs-v/, "").replace(/^v/, "");
     if (!latest) throw new Error("no tag");
     msg.textContent =
       latest === APP_VERSION
@@ -418,10 +472,144 @@ document.getElementById("checkUpdate").addEventListener("click", async () => {
   }
 });
 
+// ---------- اسکنر سرورهای استریم (StreamScanner) ----------
+let scanList = [];
+let scanResults = {};
+let scanLoaded = false;
+const SERVERS_PREVIEW_KEY = "lagslice.servers.preview";
+
+async function loadScanServers() {
+  try {
+    if (invoke) {
+      scanList = await invoke("get_servers");
+    } else {
+      const raw = localStorage.getItem(SERVERS_PREVIEW_KEY);
+      scanList = raw ? JSON.parse(raw) : [{ id: "ms1", name: "MasterStream 1", region: "ir", host: "", port: 1935 }];
+    }
+  } catch {}
+  if (!Array.isArray(scanList)) scanList = [];
+  scanLoaded = true;
+  renderScan();
+}
+
+async function persistScanServers() {
+  try {
+    if (invoke) {
+      scanList = await invoke("set_servers", { servers: scanList });
+    } else {
+      localStorage.setItem(SERVERS_PREVIEW_KEY, JSON.stringify(scanList));
+    }
+  } catch (e) {
+    document.getElementById("scanMsg").textContent = t("error_prefix") + e;
+  }
+  renderScan();
+}
+
+function renderScan() {
+  const body = document.getElementById("scanBody");
+  if (!body) return;
+  const banner = document.getElementById("bestBanner");
+  if (!scanList.length) {
+    body.innerHTML = `<tr><td colspan="9" class="empty">${esc(t("scan_empty"))}</td></tr>`;
+    banner.textContent = "";
+    return;
+  }
+  const rows = scanList.map((s) => ({ s, r: scanResults[s.id] || null }));
+  rows.sort((a, b) => (a.r ? a.r.score : Infinity) - (b.r ? b.r.score : Infinity));
+  const best = rows.find((x) => x.r && x.r.ok);
+  body.innerHTML = rows
+    .map(({ s, r }) => {
+      const url = s.host ? `rtmp://${s.host}:${s.port || 1935}/live` : "—";
+      const isBest = !!(best && r && r.id === best.r.id);
+      return `<tr${isBest ? ' class="best-row"' : ""}>
+        <td>${esc(s.name || "—")}${s.region ? ` <span class="dim">(${esc(s.region)})</span>` : ""}</td>
+        <td dir="ltr">${esc(url)}</td>
+        <td>${r && r.ping_ms != null ? r.ping_ms.toFixed(0) : "—"}</td>
+        <td>${r ? r.loss.toFixed(0) + "%" : "—"}</td>
+        <td>${r && r.tcp_ms != null ? r.tcp_ms.toFixed(0) : "—"}</td>
+        <td>${r && r.ok ? r.score.toFixed(0) : "—"}</td>
+        <td>${r ? (r.ok ? `<span class="status-ok">${esc(t("scan_ok"))}</span>` : `<span class="status-down">${esc(t("scan_down"))}</span>`) : "—"}</td>
+        <td><button class="use-btn" data-id="${esc(s.id)}">${esc(t("scan_use"))}</button></td>
+        <td><button class="del-btn" data-id="${esc(s.id)}">${esc(t("scan_del"))}</button></td>
+      </tr>`;
+    })
+    .join("");
+  banner.textContent = best
+    ? fill(t("scan_best"), { name: best.s.name || best.s.host, url: `rtmp://${best.s.host}:${best.s.port || 1935}/live` })
+    : "";
+  body.querySelectorAll(".del-btn").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      scanList = scanList.filter((x) => x.id !== btn.dataset.id);
+      delete scanResults[btn.dataset.id];
+      await persistScanServers();
+    })
+  );
+  body.querySelectorAll(".use-btn").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const s = scanList.find((x) => x.id === btn.dataset.id);
+      if (!s || !s.host) return;
+      settings.servers = [s.host];
+      saveSettings();
+      fillSettingsForm();
+      refreshPing();
+      document.getElementById("scanMsg").textContent = fill(t("scan_use_done"), { host: s.host });
+    })
+  );
+}
+
+document.getElementById("addServer").addEventListener("click", async () => {
+  const host = document.getElementById("scanHost").value.trim();
+  const msg = document.getElementById("scanMsg");
+  if (!host) {
+    msg.textContent = t("scan_need_host");
+    return;
+  }
+  const port = parseInt(document.getElementById("scanPort").value, 10);
+  scanList.push({
+    id: "s" + Date.now().toString(36),
+    name: document.getElementById("scanName").value.trim() || host,
+    region: document.getElementById("scanRegion").value.trim(),
+    host,
+    port: isNaN(port) ? 1935 : Math.min(65535, Math.max(1, port)),
+  });
+  document.getElementById("scanHost").value = "";
+  msg.textContent = "";
+  await persistScanServers();
+});
+
+document.getElementById("runScan").addEventListener("click", async () => {
+  const btn = document.getElementById("runScan");
+  const msg = document.getElementById("scanMsg");
+  if (!scanList.length) return;
+  btn.disabled = true;
+  msg.textContent = t("scanning");
+  try {
+    let results;
+    if (invoke) {
+      results = await invoke("scan_servers", { servers: scanList });
+    } else {
+      results = scanList.map((s) => {
+        const ping = 20 + Math.random() * 40;
+        const tcp = 30 + Math.random() * 60;
+        const ok = !!s.host;
+        return { id: s.id, ping_ms: ping, loss: 0, tcp_ms: tcp, ok, score: ok ? tcp + ping * 0.3 : 1000000 };
+      });
+    }
+    scanResults = {};
+    for (const r of results) scanResults[r.id] = r;
+    msg.textContent = "";
+  } catch (e) {
+    msg.textContent = t("error_prefix") + e;
+  }
+  btn.disabled = false;
+  renderScan();
+});
+
 // ---------- شروع ----------
 fillSettingsForm();
 applyTheme();
 applyLang();
+loadScanServers();
 refreshRates();
 refreshPing();
 setInterval(refreshRates, 1000);
