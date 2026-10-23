@@ -14,6 +14,9 @@ const DEFAULT_SETTINGS = {
   theme: "lagslice",
   tray: true,
   active: false,
+  keepApps: [],
+  manualCaps: {},
+  closeOthers: true,
   updateMode: "notify",
   mode: "stream",
 };
@@ -33,6 +36,9 @@ function loadSettings() {
         if (!["fa", "en"].includes(cfg.lang)) cfg.lang = "fa";
         if (!["lagslice", "neon_purple", "ice_blue"].includes(cfg.theme)) cfg.theme = "lagslice";
         if (!Array.isArray(cfg.servers) || !cfg.servers.length) cfg.servers = ["8.8.8.8"];
+        if (!Array.isArray(cfg.keepApps)) cfg.keepApps = [];
+        if (!cfg.manualCaps || typeof cfg.manualCaps !== "object") cfg.manualCaps = {};
+        if (typeof cfg.closeOthers !== "boolean") cfg.closeOthers = true;
         return cfg;
       }
     }
@@ -116,6 +122,18 @@ const STRINGS = {
     applying: "در حال اعمال…",
     reserve_done: "انجام شد — آپلود کل {total}؛ {count} برنامه سقف گرفتند تا {reserve} برای استریم رزرو بماند.",
     caps_cleared: "همه‌ی سقف‌ها حذف شدند.",
+    programs_title: "همه‌ی برنامه‌ها — انتخاب و محدودیت",
+    programs_refresh: "بازخوانی فهرست",
+    programs_add: "افزودن برنامه از فایل…",
+    programs_search_ph: "جست‌وجوی برنامه…",
+    close_others: "با فعال‌سازی موتور، برنامه‌های انتخاب‌نشده بسته شوند",
+    programs_hint: "برنامه‌های تیک‌خورده «مجاز»اند: باز می‌مانند و می‌شود برایشان سقف آپلود گذاشت. بقیه‌ی برنامه‌های در حال اجرا با فعال‌شدن موتور بسته می‌شوند؛ برنامه‌های سیستمی ویندوز هرگز بسته نمی‌شوند.",
+    prog_running: "در حال اجرا",
+    prog_not_running: "اجرا نیست",
+    prog_traffic: "ترافیک دارد",
+    prog_remove: "حذف",
+    prog_empty: "برنامه‌ای پیدا نشد.",
+    closed_apps: "بسته شد: ",
     error_prefix: "خطا: ",
     set_sec_net: "🌐 سرور پینگ و بیت‌ریت",
     set_server: "سرور پینگ:",
@@ -233,6 +251,18 @@ const STRINGS = {
     applying: "Applying…",
     reserve_done: "Done — total upload {total}; {count} apps capped so {reserve} stays reserved for the stream.",
     caps_cleared: "All caps cleared.",
+    programs_title: "All programs — select & limit",
+    programs_refresh: "Refresh list",
+    programs_add: "Add program from file…",
+    programs_search_ph: "Search programs…",
+    close_others: "When the engine activates, close unselected programs",
+    programs_hint: "Checked programs are allowed: they stay open and can get an upload cap. Other running programs are closed when the engine activates; Windows system programs are never closed.",
+    prog_running: "Running",
+    prog_not_running: "Not running",
+    prog_traffic: "Has traffic",
+    prog_remove: "Remove",
+    prog_empty: "No programs found.",
+    closed_apps: "Closed: ",
     error_prefix: "Error: ",
     set_sec_net: "🌐 Ping servers & bitrate",
     set_server: "Ping server:",
@@ -400,10 +430,16 @@ async function refreshPing() {
 }
 
 function engineParams() {
+  const streamApp = document.getElementById("streamExe").value.trim();
+  const keep = new Map();
+  for (const n of [...(settings.keepApps || []), streamApp, "cs2.exe"]) {
+    const v = (n || "").trim();
+    if (v) keep.set(v.toLowerCase(), v);
+  }
   return {
     reserveMbps: parseFloat(document.getElementById("reserveInput").value) || 0,
-    whitelist: [document.getElementById("streamExe").value.trim(), "cs2.exe"],
-    streamApp: document.getElementById("streamExe").value.trim(),
+    whitelist: [...keep.values()],
+    streamApp,
   };
 }
 
@@ -418,8 +454,11 @@ async function setEngine(on) {
       reserveMbps: p.reserveMbps,
       whitelist: p.whitelist,
       streamApp: p.streamApp,
+      closeOthers: !!settings.closeOthers,
     });
-    msg.textContent = on ? t(res === "armed" ? "engine_armed" : "engine_on") : t("engine_off");
+    msg.textContent = on ? t(res.status === "armed" ? "engine_armed" : "engine_on") : t("engine_off");
+    if (on && res.closed && res.closed.length) showClosed(res.closed);
+    if (on) setTimeout(() => void refreshPrograms(), 1500);
   } catch (e) {
     msg.textContent = t("error_prefix") + e;
   }
@@ -448,7 +487,7 @@ document.getElementById("applyReserve").addEventListener("click", async () => {
   try {
     const rep = await invoke("apply_stream_reserve", {
       reserveMbps,
-      whitelist: [streamExe, "cs2.exe"],
+      whitelist: engineParams().whitelist,
     });
     msg.textContent = fill(t("reserve_done"), {
       total: fmt(rep.total_up_kbps),
@@ -570,6 +609,163 @@ if (settings.active && invoke) {
 document.getElementById("openGuide").addEventListener("click", () => {
   document.getElementById("guideMsg").textContent = t("guide_missing");
 });
+
+// ---------- همه‌ی برنامه‌ها: انتخاب (مجاز)، سقف و بستن انتخاب‌نشده‌ها ----------
+let progRows = [];
+
+function showClosed(names) {
+  const el = document.getElementById("closedLog");
+  if (!el || !names.length) return;
+  const prev = el.textContent ? el.textContent + "‏، " : t("closed_apps");
+  el.textContent = prev + names.join("‏، ");
+}
+
+function progEntries() {
+  const caps = settings.manualCaps || {};
+  const live = (progRows || []).map((p) => ({ ...p, running: true }));
+  const liveNames = new Set(live.map((p) => p.name.toLowerCase()));
+  const saved = [];
+  const seen = new Set();
+  for (const n of [...(settings.keepApps || []), ...Object.keys(caps)]) {
+    const key = String(n).toLowerCase();
+    if (liveNames.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    saved.push({ name: n, path: "", pid_count: 0, network: false, running: false });
+  }
+  const keep = new Set((settings.keepApps || []).map((x) => String(x).toLowerCase()));
+  return [...live, ...saved].sort((a, b) => {
+    const ka = keep.has(a.name.toLowerCase()) ? 0 : 1;
+    const kb = keep.has(b.name.toLowerCase()) ? 0 : 1;
+    if (ka !== kb) return ka - kb;
+    if (a.running !== b.running) return a.running ? -1 : 1;
+    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  });
+}
+
+function renderPrograms() {
+  const list = document.getElementById("progList");
+  if (!list) return;
+  const q = (document.getElementById("progSearch").value || "").trim().toLowerCase();
+  const keep = new Set((settings.keepApps || []).map((x) => String(x).toLowerCase()));
+  const caps = settings.manualCaps || {};
+  const all = progEntries().filter(
+    (r) => !q || r.name.toLowerCase().includes(q) || (r.path || "").toLowerCase().includes(q)
+  );
+  if (!all.length) {
+    list.innerHTML = `<p class="hint">${esc(t("prog_empty"))}</p>`;
+    return;
+  }
+  list.innerHTML = all
+    .map((r) => {
+      const key = r.name.toLowerCase();
+      const checked = keep.has(key) ? "checked" : "";
+      const capVal = caps[r.name] ?? caps[key] ?? "";
+      const badges = [
+        `<span class="badge ${r.running ? "run" : "off"}">${esc(t(r.running ? "prog_running" : "prog_not_running"))}</span>`,
+        r.network ? `<span class="badge net">${esc(t("prog_traffic"))}</span>` : "",
+      ].join(" ");
+      const removeBtn = r.running
+        ? ""
+        : `<button data-act="remove" data-exe="${esc(r.name)}">${esc(t("prog_remove"))}</button>`;
+      return `<div class="prog-row">
+        <label><input type="checkbox" data-act="keep" data-exe="${esc(r.name)}" ${checked}> <span class="prog-name">${esc(r.name)}</span></label>
+        ${badges}
+        <span class="prog-path">${esc(r.path || "")}</span>
+        <input class="cap-input" type="number" min="64" step="64" placeholder="Kbps" data-exe="${esc(r.name)}" value="${esc(String(capVal))}">
+        <button data-act="cap" data-exe="${esc(r.name)}">${esc(t("cap_apply"))}</button>
+        ${removeBtn}
+      </div>`;
+    })
+    .join("");
+}
+
+async function pushKeepApps() {
+  if (!invoke || !settings.active) return;
+  try {
+    await invoke("set_keep_apps", { whitelist: engineParams().whitelist });
+  } catch {}
+}
+
+async function refreshPrograms() {
+  if (invoke) {
+    try {
+      progRows = await invoke("list_programs");
+    } catch {}
+  }
+  // وسط تایپ کاربر در پنل، رندر را نگه دار تا فوکوس نپرد.
+  const list = document.getElementById("progList");
+  if (list && list.contains(document.activeElement) && document.activeElement.classList.contains("cap-input")) return;
+  renderPrograms();
+}
+
+document.getElementById("progList").addEventListener("change", async (e) => {
+  const el = e.target;
+  if (el.dataset.act !== "keep") return;
+  const exe = el.dataset.exe;
+  const key = exe.toLowerCase();
+  settings.keepApps = (settings.keepApps || []).filter((x) => String(x).toLowerCase() !== key);
+  if (el.checked) settings.keepApps.push(exe);
+  saveSettings();
+  await pushKeepApps();
+  renderPrograms();
+});
+
+document.getElementById("progList").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const exe = btn.dataset.exe;
+  const key = exe.toLowerCase();
+  if (btn.dataset.act === "cap") {
+    const input = document.querySelector(`.prog-row .cap-input[data-exe="${CSS.escape(exe)}"]`);
+    const val = parseFloat(input ? input.value : "");
+    if (!settings.manualCaps) settings.manualCaps = {};
+    if (isNaN(val)) delete settings.manualCaps[exe];
+    else settings.manualCaps[exe] = val;
+    saveSettings();
+    if (invoke) await invoke("set_app_cap", { exe, capKbps: isNaN(val) ? null : val }).catch(() => {});
+  } else if (btn.dataset.act === "remove") {
+    settings.keepApps = (settings.keepApps || []).filter((x) => String(x).toLowerCase() !== key);
+    if (settings.manualCaps) delete settings.manualCaps[exe];
+    saveSettings();
+    if (invoke) await invoke("set_app_cap", { exe, capKbps: null }).catch(() => {});
+    await pushKeepApps();
+    renderPrograms();
+  }
+});
+
+document.getElementById("progSearch").addEventListener("input", renderPrograms);
+document.getElementById("progRefresh").addEventListener("click", () => void refreshPrograms());
+document.getElementById("progAdd").addEventListener("click", async () => {
+  if (!invoke) return;
+  const path = await invoke("pick_program_file").catch(() => null);
+  if (!path) return;
+  const name = String(path).split(/[\\/]/).pop();
+  if (!name) return;
+  const key = name.toLowerCase();
+  if (!(settings.keepApps || []).some((x) => String(x).toLowerCase() === key)) {
+    settings.keepApps = [...(settings.keepApps || []), name];
+    saveSettings();
+  }
+  await pushKeepApps();
+  await refreshPrograms();
+});
+
+const closeOthersEl = document.getElementById("closeOthers");
+closeOthersEl.checked = !!settings.closeOthers;
+closeOthersEl.addEventListener("change", () => {
+  settings.closeOthers = closeOthersEl.checked;
+  saveSettings();
+});
+
+setInterval(() => void refreshPrograms(), 15000);
+// گزارش بستن‌های دوره‌ای موتور (جارو) — هر ۵ ثانیه خوانده می‌شود.
+setInterval(async () => {
+  if (!invoke || !settings.active) return;
+  const names = await invoke("take_closed_log").catch(() => null);
+  if (names && names.length) showClosed(names);
+}, 5000);
+void refreshPrograms();
+
 
 // ---------- موتور آپدیت v2 (فید ثابت + دانلود قابل‌ادامه + هلپر نصب) ----------
 // دقیقاً مدل شیرین‌حساب: check_update2 ← download_update2 (رویداد پیشرفت

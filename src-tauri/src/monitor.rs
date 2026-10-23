@@ -22,6 +22,77 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+/// یک پردازه‌ی زنده‌ی سیستم (برای فهرست «همه‌ی برنامه‌ها»).
+#[derive(Serialize, Clone, Debug)]
+pub struct ProcInfo {
+    pub pid: u32,
+    pub name: String,
+    /// مسیر کامل فایل اجرایی؛ خالی یعنی قابل‌خواندن نبود (پروسه‌ی سیستمی).
+    pub path: String,
+}
+
+/// فهرست همه‌ی پردازه‌های زنده با نام و مسیر (بهترین تلاش برای مسیر).
+#[cfg(windows)]
+pub fn list_processes() -> Vec<ProcInfo> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return out;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let len = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                let pid = entry.th32ProcessID;
+                let mut path = String::new();
+                if let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    let mut buf = [0u16; 1024];
+                    let mut size = buf.len() as u32;
+                    if QueryFullProcessImageNameW(
+                        h,
+                        PROCESS_NAME_FORMAT(0),
+                        windows::core::PWSTR(buf.as_mut_ptr()),
+                        &mut size,
+                    )
+                    .is_ok()
+                    {
+                        path = String::from_utf16_lossy(&buf[..size as usize]);
+                    }
+                    let _ = CloseHandle(h);
+                }
+                out.push(ProcInfo { pid, name, path });
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+pub fn list_processes() -> Vec<ProcInfo> {
+    Vec::new()
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct AppRate {
     pub pid: u32,

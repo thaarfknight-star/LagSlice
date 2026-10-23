@@ -237,3 +237,16 @@ tr.best-row td { background: rgba(255, 0, 212, 0.10); font-weight: 600; }
 .engine-switch input:checked + .es-track { background: linear-gradient(90deg, #22d3ee, #818cf8); }
 .engine-switch input:checked + .es-track .es-dot { transform: translateX(-22px); }
 .engine-switch .es-label { font-size: 13px; font-weight: 600; }
+
+/* فهرست همه‌ی برنامه‌ها */
+.prog-list { margin-top: 8px; }
+.prog-row { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid rgba(127, 160, 255, 0.12); flex-wrap: wrap; }
+.prog-name { font-weight: 600; }
+.prog-path { opacity: 0.55; font-size: 11px; direction: ltr; unicode-bidi: embed; }
+.badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid rgba(127, 160, 255, 0.35); }
+.badge.run { color: #7be495; }
+.badge.off { opacity: 0.6; }
+.badge.net { color: #7cc4ff; }
+.prog-row .cap-input { width: 110px; }
+.check-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.hint { opacity: 0.7; font-size: 12px; }

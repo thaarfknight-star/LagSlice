@@ -68,6 +68,22 @@
       </table>
       <p id="procMsg" class="msg"></p>
     </section>
+
+    <section class="card">
+      <h2 data-i18n="programs_title">همه‌ی برنامه‌ها — انتخاب و محدودیت</h2>
+      <div class="row">
+        <input id="progSearch" type="text" data-i18n-ph="programs_search_ph" placeholder="جست‌وجوی برنامه…">
+        <button id="progRefresh" data-i18n="programs_refresh">بازخوانی فهرست</button>
+        <button id="progAdd" data-i18n="programs_add">افزودن برنامه از فایل…</button>
+      </div>
+      <label class="check-row">
+        <input type="checkbox" id="closeOthers">
+        <span data-i18n="close_others">با فعال‌سازی موتور، برنامه‌های انتخاب‌نشده بسته شوند</span>
+      </label>
+      <p class="hint" data-i18n="programs_hint">برنامه‌های تیک‌خورده «مجاز»اند: باز می‌مانند و می‌شود برایشان سقف آپلود گذاشت. بقیه‌ی برنامه‌های در حال اجرا با فعال‌شدن موتور بسته می‌شوند؛ برنامه‌های سیستمی ویندوز هرگز بسته نمی‌شوند.</p>
+      <div id="progList" class="prog-list"></div>
+      <p id="closedLog" class="msg"></p>
+    </section>
   </main>
 
   <main id="viewScan" class="hidden">

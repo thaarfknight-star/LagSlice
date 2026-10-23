@@ -33,6 +33,12 @@ struct EngineState {
     reserve_mbps: f64,
     whitelist: Vec<String>,
     stream_app: String,
+    /// بستن خودکار برنامه‌های انتخاب‌نشده هنگام فعال‌بودن موتور.
+    close_others: bool,
+    /// آخرین جاروی دوره‌ای (در تیک تثبیت‌کننده).
+    last_sweep: Option<std::time::Instant>,
+    /// نام برنامه‌هایی که جاروی دوره‌ای بسته — فرانت می‌خواند و خالی می‌کند.
+    closed_log: Vec<String>,
     last_apply: Option<std::time::Instant>,
     /// بیشینه‌ی مجموع آپلود دیده‌شده در این نشست (مبنای تشخیص اشباع).
     peak_total: f64,
@@ -47,6 +53,9 @@ impl Default for EngineState {
             reserve_mbps: 6.0,
             whitelist: Vec::new(),
             stream_app: String::new(),
+            close_others: false,
+            last_sweep: None,
+            closed_log: Vec::new(),
             last_apply: None,
             peak_total: 0.0,
             applied: Vec::new(),
@@ -230,6 +239,29 @@ fn stabilizer_tick(state: &AppState) {
         (saturated, hungry)
     };
     let _ = do_apply(state, saturated && stream_hungry);
+    // جاروی دوره‌ای بستن انتخاب‌نشده‌ها: فقط برنامه‌هایی که همین حالا
+    // ترافیک دارند (برنامه‌ی بی‌ترافیکی که کاربر وسط استریم باز کند
+    // دست نمی‌خورد) — هر ۱۵ ثانیه یک بار.
+    let do_sweep = {
+        let mut e = state.engine.lock().unwrap();
+        if e.active && e.close_others {
+            match e.last_sweep {
+                Some(t) if t.elapsed() < std::time::Duration::from_secs(15) => false,
+                _ => {
+                    e.last_sweep = Some(std::time::Instant::now());
+                    true
+                }
+            }
+        } else {
+            false
+        }
+    };
+    if do_sweep {
+        let closed = sweep_unselected(state, true);
+        if !closed.is_empty() {
+            state.engine.lock().unwrap().closed_log.extend(closed);
+        }
+    }
 }
 
 #[tauri::command]
@@ -247,8 +279,18 @@ fn apply_stream_reserve(
     do_apply(&state, false)
 }
 
+/// نتیجه‌ی فعال‌سازی موتور برای فرانت.
+#[derive(Serialize)]
+struct ActivateResult {
+    /// "active" | "armed" | "off"
+    status: String,
+    /// برنامه‌هایی که همین فعال‌سازی بسته است (حالت بستن انتخاب‌نشده‌ها).
+    closed: Vec<String>,
+}
+
 /// دکمه‌ی فعال‌سازی اصلی: روشن = سقف‌ها اعمال و زنده نگه داشته می‌شوند +
-/// اولویت DSCP برای برنامه‌ی استریم + خاموشی گلوگاه شبکه‌ی ویندوز؛
+/// اولویت DSCP برای برنامه‌ی استریم + خاموشی گلوگاه شبکه‌ی ویندوز +
+/// (اگر close_others روشن باشد) بستن همه‌ی برنامه‌های انتخاب‌نشده؛
 /// خاموش = همه‌ی سقف‌ها حذف و گلوگاه برمی‌گردد.
 #[tauri::command]
 fn set_engine_active(
@@ -257,7 +299,8 @@ fn set_engine_active(
     reserve_mbps: f64,
     whitelist: Vec<String>,
     stream_app: String,
-) -> Result<String, String> {
+    close_others: bool,
+) -> Result<ActivateResult, String> {
     if active {
         {
             let mut e = state.engine.lock().unwrap();
@@ -265,27 +308,45 @@ fn set_engine_active(
             e.reserve_mbps = reserve_mbps;
             e.whitelist = whitelist;
             e.stream_app = stream_app.clone();
+            e.close_others = close_others;
             e.applied.clear();
             e.last_apply = None;
+            e.last_sweep = None;
         }
         if !stream_app.is_empty() {
             let _ = qos::set_dscp(&stream_app, 46);
         }
         qos::throttle_disable();
-        match do_apply(&state, false) {
-            Ok(_) => Ok("active".into()),
-            Err(_) => Ok("armed".into()), // ترافیک هنوز نیست؛ تیک اول اعمال می‌کند
-        }
+        let status = match do_apply(&state, false) {
+            Ok(_) => "active",
+            Err(_) => "armed", // ترافیک هنوز نیست؛ تیک اول اعمال می‌کند
+        };
+        let closed = if close_others {
+            sweep_unselected(&state, false)
+        } else {
+            Vec::new()
+        };
+        Ok(ActivateResult {
+            status: status.into(),
+            closed,
+        })
     } else {
         {
             let mut e = state.engine.lock().unwrap();
             e.active = false;
             e.applied.clear();
         }
+        {
+            let mut e = state.engine.lock().unwrap();
+            e.close_others = false;
+        }
         qos::clear_all()?;
         qos::throttle_restore();
         qos::refresh_policies();
-        Ok("off".into())
+        Ok(ActivateResult {
+            status: "off".into(),
+            closed: Vec::new(),
+        })
     }
 }
 
@@ -298,17 +359,8 @@ const NEVER_TOUCH: &[&str] = &[
     "msmpeng.exe", "audiodg.exe",
 ];
 
-/// بستن یک پروسه از روی PID — با گارد پروسه‌های سیستمی و خود برنامه.
-#[tauri::command]
-fn kill_process(pid: u32) -> Result<(), String> {
-    if pid == std::process::id() {
-        return Err("پروسه‌ی خود برنامه بسته نمی‌شود.".into());
-    }
-    if let Some(name) = monitor::process_name(pid) {
-        if NEVER_TOUCH.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
-            return Err(format!("{name} پروسه‌ی سیستمی است و بسته نمی‌شود."));
-        }
-    }
+/// بستن خام یک PID با taskkill (بدون گارد — کالر گاردها را خودش چک می‌کند).
+fn kill_pid(pid: u32) -> Result<(), String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -325,7 +377,143 @@ fn kill_process(pid: u32) -> Result<(), String> {
         }
     }
     #[cfg(not(windows))]
-    Err("فقط ویندوز".into())
+    {
+        let _ = pid;
+        Err("فقط ویندوز".into())
+    }
+}
+
+/// بستن یک پروسه از روی PID — با گارد پروسه‌های سیستمی و خود برنامه.
+#[tauri::command]
+fn kill_process(pid: u32) -> Result<(), String> {
+    if pid == std::process::id() {
+        return Err("پروسه‌ی خود برنامه بسته نمی‌شود.".into());
+    }
+    if let Some(name) = monitor::process_name(pid) {
+        if NEVER_TOUCH.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+            return Err(format!("{name} پروسه‌ی سیستمی است و بسته نمی‌شود."));
+        }
+    }
+    kill_pid(pid)
+}
+
+/// یک ردیف از فهرست «همه‌ی برنامه‌ها»: گروه‌بندی‌شده بر اساس نام exe.
+#[derive(Serialize)]
+struct ProgramRow {
+    name: String,
+    path: String,
+    pid_count: usize,
+    /// همین حالا ترافیک شبکه دارد (در آخرین نرخ‌ها دیده شده).
+    network: bool,
+}
+
+/// فهرست همه‌ی برنامه‌های در حال اجرا (+ وضعیت ترافیک) برای انتخاب کاربر.
+#[tauri::command]
+fn list_programs(state: tauri::State<AppState>) -> Vec<ProgramRow> {
+    let net: std::collections::HashSet<String> = state
+        .last_rates
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.name.to_lowercase())
+        .collect();
+    let mut rows: Vec<ProgramRow> = Vec::new();
+    for p in monitor::list_processes() {
+        let key = p.name.to_lowercase();
+        if let Some(row) = rows.iter_mut().find(|r: &&mut ProgramRow| r.name.to_lowercase() == key) {
+            row.pid_count += 1;
+            if row.path.is_empty() && !p.path.is_empty() {
+                row.path = p.path.clone();
+            }
+        } else {
+            rows.push(ProgramRow {
+                network: net.contains(&key),
+                name: p.name,
+                path: p.path,
+                pid_count: 1,
+            });
+        }
+    }
+    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows
+}
+
+/// دیالوگ انتخاب فایل اجرایی یک برنامه (برای افزودن برنامه‌ای که اجرا نیست).
+#[tauri::command]
+fn pick_program_file(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::{DialogExt, FilePath};
+    match app
+        .dialog()
+        .file()
+        .add_filter("برنامه", &["exe"])
+        .blocking_pick_file()
+    {
+        Some(FilePath::Path(p)) => Some(p.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+/// به‌روزرسانی زنده‌ی فهرست برنامه‌های مجاز (انتخاب‌های کاربر) روی موتور فعال.
+#[tauri::command]
+fn set_keep_apps(state: tauri::State<AppState>, whitelist: Vec<String>) {
+    state.engine.lock().unwrap().whitelist = whitelist;
+}
+
+/// خواندن و خالی‌کردن گزارش برنامه‌هایی که جاروی دوره‌ای بسته است.
+#[tauri::command]
+fn take_closed_log(state: tauri::State<AppState>) -> Vec<String> {
+    std::mem::take(&mut state.engine.lock().unwrap().closed_log)
+}
+
+/// جاروی بستن برنامه‌های انتخاب‌نشده. گاردها: فهرست NEVER_TOUCH، خود برنامه،
+/// هر پردازه‌ای که مسیرش زیر پوشه‌ی ویندوز است و برنامه‌های مجاز (whitelist +
+/// برنامه‌ی استریم). only_network=true یعنی فقط برنامه‌های دارای ترافیک فعلی.
+/// خروجی: نام برنامه‌هایی که بسته شدند (بدون تکرار).
+fn sweep_unselected(state: &AppState, only_network: bool) -> Vec<String> {
+    let (keep, stream_app) = {
+        let e = state.engine.lock().unwrap();
+        let mut keep: std::collections::HashSet<String> =
+            e.whitelist.iter().map(|w| w.to_lowercase()).collect();
+        if !e.stream_app.is_empty() {
+            keep.insert(e.stream_app.to_lowercase());
+        }
+        (keep, e.stream_app.clone())
+    };
+    let _ = stream_app;
+    let net_names: std::collections::HashSet<String> = state
+        .last_rates
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r.name.to_lowercase())
+        .collect();
+    let win_dir = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| "C:\\Windows".into())
+        .to_lowercase();
+    let own_pid = std::process::id();
+    let mut closed: Vec<String> = Vec::new();
+    for p in monitor::list_processes() {
+        if p.pid == own_pid || p.pid <= 4 {
+            continue;
+        }
+        let lname = p.name.to_lowercase();
+        if lname == "lagslice.exe" || keep.contains(&lname) {
+            continue;
+        }
+        if NEVER_TOUCH.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
+            continue;
+        }
+        if !p.path.is_empty() && p.path.to_lowercase().starts_with(&win_dir) {
+            continue;
+        }
+        if only_network && !net_names.contains(&lname) {
+            continue;
+        }
+        if kill_pid(p.pid).is_ok() && !closed.iter().any(|c| c.eq_ignore_ascii_case(&p.name)) {
+            closed.push(p.name.clone());
+        }
+    }
+    closed
 }
 
 /// حذف همه‌ی سقف‌های ساخته‌ی LagSlice.
@@ -506,6 +694,10 @@ pub fn run() {
             add_to_whitelist,
             remove_from_whitelist,
             kill_process,
+            list_programs,
+            pick_program_file,
+            set_keep_apps,
+            take_closed_log,
             get_servers,
             set_servers,
             scan_servers,
