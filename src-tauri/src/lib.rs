@@ -22,6 +22,36 @@ struct AppState {
     /// «بستن به سینی سیستم» — فرانت از روی تنظیمات کاربر پرش می‌کند؛
     /// وقتی روشن است، دکمه‌ی بستن پنجره فقط آن را مخفی می‌کند.
     close_to_tray: Mutex<bool>,
+    /// موتور محدودیت (دکمه‌ی فعال‌سازی اصلی): وقتی فعال است، سقف‌ها
+    /// زنده نگه داشته می‌شوند و تثبیت‌کننده‌ی استریم کار می‌کند.
+    engine: Mutex<EngineState>,
+}
+
+/// پارامترها و وضعیت زنده‌ی موتور محدودیت.
+struct EngineState {
+    active: bool,
+    reserve_mbps: f64,
+    whitelist: Vec<String>,
+    stream_app: String,
+    last_apply: Option<std::time::Instant>,
+    /// بیشینه‌ی مجموع آپلود دیده‌شده در این نشست (مبنای تشخیص اشباع).
+    peak_total: f64,
+    /// سقف‌هایی که همین حالا روی سیستم اعمال شده‌اند (exe, kbps).
+    applied: Vec<(String, f64)>,
+}
+
+impl Default for EngineState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            reserve_mbps: 6.0,
+            whitelist: Vec::new(),
+            stream_app: String::new(),
+            last_apply: None,
+            peak_total: 0.0,
+            applied: Vec::new(),
+        }
+    }
 }
 
 /// نرخ زنده‌ی آپلود/دانلود هر برنامه (Kbps).
@@ -41,6 +71,8 @@ fn get_app_rates(state: tauri::State<AppState>) -> Vec<AppRate> {
             .unwrap()
             .retain(|r| !exited.contains(&r.pid));
     }
+    // تثبیت‌کننده‌ی استریم: وقتی موتور فعال است سقف‌ها را زنده نگه می‌دارد.
+    stabilizer_tick(&state);
     rates
 }
 
@@ -84,28 +116,69 @@ struct ReserveReport {
 /// کنار گذاشته می‌شود و بقیه‌ی برنامه‌ها (جز لیست سفید) متناسب سقف می‌گیرند.
 /// لیست سفیدِ مؤثر = ادغام لیست ذخیره‌شده (منبع اصلی) با لیست ارسالی کالر
 /// (سازگاری با فرانت فعلی که برنامه‌ی استریم را همان لحظه می‌فرستد).
-#[tauri::command]
-fn apply_stream_reserve(
-    state: tauri::State<AppState>,
-    reserve_mbps: f64,
-    whitelist: Vec<String>,
-) -> Result<ReserveReport, String> {
+/// محاسبه و اعمال سقف‌ها از روی آخرین نرخ‌ها (تجمیع per-exe: چند پردازه‌ی
+/// یک برنامه یک سقف می‌گیرند). squeeze=true سقف غیراستریم‌ها را ۱۵٪ تنگ‌تر
+/// می‌کند (واکنش تثبیت‌کننده به اشباع لینک).
+fn do_apply(state: &AppState, squeeze: bool) -> Result<ReserveReport, String> {
+    let (reserve_mbps, extra_wl) = {
+        let e = state.engine.lock().unwrap();
+        (e.reserve_mbps, e.whitelist.clone())
+    };
     let rates = state.last_rates.lock().unwrap().clone();
     let total: f64 = rates.iter().map(|r| r.up_kbps).sum();
     if total <= 0.0 {
         return Err("هنوز ترافیک آپلودی اندازه‌گیری نشده؛ چند ثانیه صبر کن و دوباره بزن.".into());
     }
     let stored = state.whitelist.lock().unwrap().clone();
-    let effective = qos::merge_whitelists(&stored, &whitelist);
+    let effective = qos::merge_whitelists(&stored, &extra_wl);
     let reserve_kbps = reserve_mbps * 1000.0;
-    let targets: Vec<(String, f64)> = rates
-        .iter()
-        .filter(|r| !qos::is_whitelisted(&r.name, &effective))
-        .map(|r| (r.name.clone(), r.up_kbps))
-        .collect();
-    let caps = qos::compute_caps(total, reserve_kbps, &targets);
-    for (exe, cap) in &caps {
-        qos::set_cap(exe, *cap)?;
+    // تجمیع نرخ پردازه‌های هم‌نام قبل از محاسبه‌ی سقف
+    let mut agg: Vec<(String, f64)> = Vec::new();
+    for r in &rates {
+        if qos::is_whitelisted(&r.name, &effective) {
+            continue;
+        }
+        if let Some(row) = agg.iter_mut().find(|(n, _)| n.eq_ignore_ascii_case(&r.name)) {
+            row.1 += r.up_kbps;
+        } else {
+            agg.push((r.name.clone(), r.up_kbps));
+        }
+    }
+    let mut caps = qos::compute_caps(total, reserve_kbps, &agg);
+    if squeeze {
+        for (_, cap) in &mut caps {
+            *cap = (*cap * 0.85).max(32.0);
+        }
+    }
+    {
+        // فقط سقف‌های عوض‌شده را بنویس تا رجیستری بی‌جهت تکان نخورد.
+        let mut e = state.engine.lock().unwrap();
+        for (exe, cap) in &caps {
+            let prev = e
+                .applied
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(exe))
+                .map(|(_, c)| *c);
+            let changed = match prev {
+                Some(p) => (p - cap).abs() > (p.max(*cap) * 0.10).max(1.0),
+                None => true,
+            };
+            if changed {
+                qos::set_cap(exe, *cap)?;
+            }
+        }
+        // برنامه‌هایی که دیگر ترافیکی ندارند سقف‌شان را بردار.
+        let stale: Vec<String> = e
+            .applied
+            .iter()
+            .filter(|(n, _)| !caps.iter().any(|(c, _)| c.eq_ignore_ascii_case(n)))
+            .map(|(n, _)| n.clone())
+            .collect();
+        for exe in &stale {
+            let _ = qos::remove_cap(exe);
+        }
+        e.applied = caps.clone();
+        e.last_apply = Some(std::time::Instant::now());
     }
     qos::refresh_policies();
     Ok(ReserveReport {
@@ -113,6 +186,107 @@ fn apply_stream_reserve(
         reserve_kbps,
         capped: caps,
     })
+}
+
+/// تیک تثبیت‌کننده: هر ۵ ثانیه (از مسیر نظرسنجی نرخ‌ها صدا زده می‌شود).
+/// وقتی لینک اشباع است و استریم به سهمش نمی‌رسد، بقیه تنگ‌تر می‌شوند.
+fn stabilizer_tick(state: &AppState) {
+    let should_run = {
+        let mut e = state.engine.lock().unwrap();
+        if !e.active {
+            return;
+        }
+        // قله‌ی آپلود با فراموشی آرام (پنجره‌ی لغزان تقریبی)
+        let total: f64 = state
+            .last_rates
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.up_kbps)
+            .sum();
+        e.peak_total = e.peak_total.max(total * 1.02);
+        e.peak_total *= 0.995;
+        match e.last_apply {
+            Some(t) if t.elapsed() < std::time::Duration::from_secs(5) => false,
+            _ => true,
+        }
+    };
+    if !should_run {
+        return;
+    }
+    let (saturated, stream_hungry) = {
+        let e = state.engine.lock().unwrap();
+        let rates = state.last_rates.lock().unwrap().clone();
+        let total: f64 = rates.iter().map(|r| r.up_kbps).sum();
+        let stream_up: f64 = rates
+            .iter()
+            .filter(|r| r.name.eq_ignore_ascii_case(&e.stream_app))
+            .map(|r| r.up_kbps)
+            .sum();
+        let saturated = e.peak_total > 0.0 && total >= 0.95 * e.peak_total;
+        let hungry = !e.stream_app.is_empty()
+            && stream_up > 0.0
+            && stream_up < 0.90 * e.reserve_mbps * 1000.0;
+        (saturated, hungry)
+    };
+    let _ = do_apply(state, saturated && stream_hungry);
+}
+
+#[tauri::command]
+fn apply_stream_reserve(
+    state: tauri::State<AppState>,
+    reserve_mbps: f64,
+    whitelist: Vec<String>,
+) -> Result<ReserveReport, String> {
+    {
+        let mut e = state.engine.lock().unwrap();
+        e.reserve_mbps = reserve_mbps;
+        e.whitelist = whitelist.clone();
+        e.applied.clear(); // اعمال دستی = بازنویسی کامل
+    }
+    do_apply(&state, false)
+}
+
+/// دکمه‌ی فعال‌سازی اصلی: روشن = سقف‌ها اعمال و زنده نگه داشته می‌شوند +
+/// اولویت DSCP برای برنامه‌ی استریم + خاموشی گلوگاه شبکه‌ی ویندوز؛
+/// خاموش = همه‌ی سقف‌ها حذف و گلوگاه برمی‌گردد.
+#[tauri::command]
+fn set_engine_active(
+    state: tauri::State<AppState>,
+    active: bool,
+    reserve_mbps: f64,
+    whitelist: Vec<String>,
+    stream_app: String,
+) -> Result<String, String> {
+    if active {
+        {
+            let mut e = state.engine.lock().unwrap();
+            e.active = true;
+            e.reserve_mbps = reserve_mbps;
+            e.whitelist = whitelist;
+            e.stream_app = stream_app.clone();
+            e.applied.clear();
+            e.last_apply = None;
+        }
+        if !stream_app.is_empty() {
+            let _ = qos::set_dscp(&stream_app, 46);
+        }
+        qos::throttle_disable();
+        match do_apply(&state, false) {
+            Ok(_) => Ok("active".into()),
+            Err(_) => Ok("armed".into()), // ترافیک هنوز نیست؛ تیک اول اعمال می‌کند
+        }
+    } else {
+        {
+            let mut e = state.engine.lock().unwrap();
+            e.active = false;
+            e.applied.clear();
+        }
+        qos::clear_all()?;
+        qos::throttle_restore();
+        qos::refresh_policies();
+        Ok("off".into())
+    }
 }
 
 /// پروسه‌هایی که هرگز نباید بسته شوند (همتای NEVER_TOUCH نسخه‌ی پایتون).
@@ -281,6 +455,8 @@ pub fn run() {
     // سیستم خاموش شده باشد، پالیسی‌های «LagSlice-» روی سیستم مانده‌اند؛
     // اسکن و پاک‌سازی امن آن‌ها یعنی این اجرا با سیستم تمیز شروع می‌شود.
     let recovery = qos::recover_on_startup();
+    // اگر اجرای قبلی وسط کار مرده بود، گلوگاه شبکه را هم برگردان.
+    qos::throttle_restore();
     if !recovery.found.is_empty() {
         eprintln!(
             "[LagSlice] بازیابی هنگام استارت: {} پالیسی به‌جامانده پیدا شد، {} حذف شد، {} ناموفق ماند.",
@@ -313,13 +489,15 @@ pub fn run() {
             last_rates: Mutex::new(Vec::new()),
             whitelist: Mutex::new(whitelist),
             servers: Mutex::new(servers),
-            close_to_tray: Mutex::new(false),
+            close_to_tray: Mutex::new(true),
+            engine: Mutex::new(EngineState::default()),
         })
         .invoke_handler(tauri::generate_handler![
             get_app_rates,
             ping_host,
             set_app_cap,
             apply_stream_reserve,
+            set_engine_active,
             clear_all_caps,
             list_active_policies,
             recover_policies,
@@ -401,6 +579,7 @@ pub fn run() {
             // هنگام خروج، هیچ پالیسی یتیمی روی سیستم کاربر نماند.
             if let tauri::RunEvent::Exit = event {
                 let _ = qos::clear_all();
+                qos::throttle_restore();
             }
         });
 }

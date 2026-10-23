@@ -228,3 +228,12 @@ tr.best-row td { background: rgba(255, 0, 212, 0.10); font-weight: 600; }
 .update-notes { white-space: pre-wrap; background: rgba(56, 189, 248, .08); border: 1px solid rgba(56, 189, 248, .25); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: 13px; line-height: 1.9; }
 .progress { height: 8px; border-radius: 99px; background: rgba(148, 163, 184, .18); overflow: hidden; margin: 8px 0; }
 .progress > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, #22d3ee, #a78bfa); transition: width .2s; }
+
+/* ── سوییچ فعال‌سازی موتور ── */
+.engine-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+.engine-switch input { display: none; }
+.engine-switch .es-track { width: 46px; height: 24px; border-radius: 99px; background: rgba(148,163,184,.25); position: relative; transition: background .2s; flex: none; }
+.engine-switch .es-dot { position: absolute; top: 3px; inset-inline-start: 3px; width: 18px; height: 18px; border-radius: 50%; background: #e2e8f0; transition: transform .2s; }
+.engine-switch input:checked + .es-track { background: linear-gradient(90deg, #22d3ee, #818cf8); }
+.engine-switch input:checked + .es-track .es-dot { transform: translateX(-22px); }
+.engine-switch .es-label { font-size: 13px; font-weight: 600; }

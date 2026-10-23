@@ -12,7 +12,8 @@ const DEFAULT_SETTINGS = {
   lang: "fa",
   ping_enabled: true,
   theme: "lagslice",
-  tray: false,
+  tray: true,
+  active: false,
   updateMode: "notify",
   mode: "stream",
 };
@@ -24,6 +25,11 @@ function loadSettings() {
       const data = JSON.parse(raw);
       if (data && typeof data === "object") {
         const cfg = { ...DEFAULT_SETTINGS, ...data };
+        // مهاجرت یک‌باره (0.8.0): بستن به سینی پیش‌فرض روشن شد.
+        if (!cfg.tray_v2) {
+          cfg.tray = true;
+          cfg.tray_v2 = true;
+        }
         if (!["fa", "en"].includes(cfg.lang)) cfg.lang = "fa";
         if (!["lagslice", "neon_purple", "ice_blue"].includes(cfg.theme)) cfg.theme = "lagslice";
         if (!Array.isArray(cfg.servers) || !cfg.servers.length) cfg.servers = ["8.8.8.8"];
@@ -129,6 +135,10 @@ const STRINGS = {
     theme_ice_blue: "آبی یخی",
     set_sec_general: "⚙ عمومی",
     set_tray: "بستن به سینی سیستم (exit to tray)",
+    engine_label: "محدودیت‌ها فعال",
+    engine_on: "موتور محدودیت فعال شد — سقف‌ها زنده نگه داشته می‌شوند و تثبیت‌کننده‌ی استریم کار می‌کند.",
+    engine_armed: "موتور فعال شد — هنوز ترافیکی نیست؛ با شروع آپلود سقف‌ها خودکار اعمال می‌شوند.",
+    engine_off: "موتور محدودیت خاموش شد — همه‌ی سقف‌ها حذف شدند.",
     set_sec_contact: "💬 پشتیبانی",
     set_telegram_btn: "باز کردن در تلگرام @tha_arf",
     set_sec_help: "📖 راهنما",
@@ -242,6 +252,10 @@ const STRINGS = {
     theme_ice_blue: "Ice Blue",
     set_sec_general: "⚙ General",
     set_tray: "Close to system tray (exit to tray)",
+    engine_label: "Limits active",
+    engine_on: "Limits engine is ON — caps stay applied live and the stream stabilizer is working.",
+    engine_armed: "Engine is ON — no traffic yet; caps will apply automatically once upload starts.",
+    engine_off: "Limits engine is OFF — all caps removed.",
     set_sec_contact: "💬 Support",
     set_telegram_btn: "Open in Telegram @tha_arf",
     set_sec_help: "📖 Guide",
@@ -385,10 +399,47 @@ async function refreshPing() {
   } catch {}
 }
 
+function engineParams() {
+  return {
+    reserveMbps: parseFloat(document.getElementById("reserveInput").value) || 0,
+    whitelist: [document.getElementById("streamExe").value.trim(), "cs2.exe"],
+    streamApp: document.getElementById("streamExe").value.trim(),
+  };
+}
+
+async function setEngine(on) {
+  const msg = document.getElementById("reserveMsg");
+  if (!invoke) return;
+  const p = engineParams();
+  settings.stream_exe = p.streamApp;
+  try {
+    const res = await invoke("set_engine_active", {
+      active: on,
+      reserveMbps: p.reserveMbps,
+      whitelist: p.whitelist,
+      streamApp: p.streamApp,
+    });
+    msg.textContent = on ? t(res === "armed" ? "engine_armed" : "engine_on") : t("engine_off");
+  } catch (e) {
+    msg.textContent = t("error_prefix") + e;
+  }
+}
+
+document.getElementById("engineToggle").addEventListener("change", (e) => {
+  settings.active = e.target.checked;
+  saveSettings();
+  void setEngine(settings.active);
+});
+
 document.getElementById("applyReserve").addEventListener("click", async () => {
   const msg = document.getElementById("reserveMsg");
   if (!invoke) {
     msg.textContent = t("reserve_preview");
+    return;
+  }
+  // موتور روشن است؟ اعمال = تازه‌سازی پارامترهای همان موتور.
+  if (settings.active) {
+    await setEngine(true);
     return;
   }
   const reserveMbps = parseFloat(document.getElementById("reserveInput").value) || 0;
@@ -411,6 +462,13 @@ document.getElementById("applyReserve").addEventListener("click", async () => {
 
 document.getElementById("clearCaps").addEventListener("click", async () => {
   if (!invoke) return;
+  if (settings.active) {
+    settings.active = false;
+    document.getElementById("engineToggle").checked = false;
+    saveSettings();
+    await setEngine(false);
+    return;
+  }
   await invoke("clear_all_caps");
   document.getElementById("reserveMsg").textContent = t("caps_cleared");
 });
@@ -499,6 +557,14 @@ document.getElementById("setTray").addEventListener("change", (e) => {
   settings.tray = e.target.checked;
   saveSettings();
   pushTraySetting();
+
+// موتور محدودیت: وضعیت سوییچ و برنامه‌ی استریم را برگردان و اگر روشن
+// مانده بود، بعد از گرم‌شدن اندازه‌گیری خودش دوباره فعالش کن.
+if (settings.stream_exe) document.getElementById("streamExe").value = settings.stream_exe;
+document.getElementById("engineToggle").checked = !!settings.active;
+if (settings.active && invoke) {
+  setTimeout(() => void setEngine(true), 2500);
+}
 });
 
 document.getElementById("openGuide").addEventListener("click", () => {

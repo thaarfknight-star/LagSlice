@@ -299,9 +299,10 @@ mod imp {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_SUCCESS;
     use windows::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegEnumKeyExW, RegOpenKeyExW,
-        RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_READ,
-        REG_CREATE_KEY_DISPOSITION, REG_OPTION_NON_VOLATILE, REG_SZ,
+        RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegDeleteValueW, RegEnumKeyExW,
+        RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_LOCAL_MACHINE,
+        KEY_ALL_ACCESS, KEY_READ, REG_CREATE_KEY_DISPOSITION, REG_DWORD,
+        REG_OPTION_NON_VOLATILE, REG_SZ,
     };
 
     fn wide(s: &str) -> Vec<u16> {
@@ -322,6 +323,173 @@ mod imp {
         } else {
             Err(format!("RegSetValueExW({name}) -> {:?}", rc))
         }
+    }
+
+    fn set_dword(key: HKEY, name: &str, value: u32) -> Result<(), String> {
+        let name_w = wide(name);
+        let bytes = value.to_le_bytes();
+        let rc = unsafe {
+            RegSetValueExW(key, PCWSTR(name_w.as_ptr()), 0, REG_DWORD, Some(&bytes))
+        };
+        if rc == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!("RegSetValueExW({name}) -> {:?}", rc))
+        }
+    }
+
+    fn get_dword(key: HKEY, name: &str) -> Option<u32> {
+        let name_w = wide(name);
+        let mut buf = [0u8; 4];
+        let mut len = buf.len() as u32;
+        let mut ty = REG_DWORD;
+        let rc = unsafe {
+            RegQueryValueExW(
+                key,
+                PCWSTR(name_w.as_ptr()),
+                None,
+                Some(&mut ty),
+                Some(buf.as_mut_ptr()),
+                Some(&mut len),
+            )
+        };
+        if rc == ERROR_SUCCESS && len >= 4 {
+            Some(u32::from_le_bytes(buf))
+        } else {
+            None
+        }
+    }
+
+    /// ساخت کلید پالیسی (مشترک بین سقف و DSCP) و برگرداندن هندل آن.
+    fn open_policy_key(exe: &str) -> Result<HKEY, String> {
+        let path = format!(r"{}\{}", POLICY_ROOT, policy_name(exe));
+        let path_w = wide(&path);
+        let mut key = HKEY::default();
+        let mut disp = REG_CREATE_KEY_DISPOSITION::default();
+        let rc = unsafe {
+            RegCreateKeyExW(
+                HKEY_LOCAL_MACHINE,
+                PCWSTR(path_w.as_ptr()),
+                0,
+                None,
+                REG_OPTION_NON_VOLATILE,
+                KEY_ALL_ACCESS,
+                None,
+                &mut key,
+                Some(&mut disp),
+            )
+        };
+        if rc != ERROR_SUCCESS {
+            return Err(format!("RegCreateKeyExW -> {:?} (ادمین لازم است)", rc));
+        }
+        Ok(key)
+    }
+
+    fn write_policy_identity(key: HKEY, exe: &str) -> Result<(), String> {
+        set_sz(key, "Version", "1.0")?;
+        set_sz(key, "Application Name", exe)?;
+        set_sz(key, "Protocol", "*")?;
+        set_sz(key, "Local Port", "*")?;
+        set_sz(key, "Local IP", "*")?;
+        set_sz(key, "Local IP Prefix Length", "*")?;
+        set_sz(key, "Remote Port", "*")?;
+        set_sz(key, "Remote IP", "*")?;
+        set_sz(key, "Remote IP Prefix Length", "*")?;
+        Ok(())
+    }
+
+    /// پالیسی اولویت DSCP برای برنامه‌ی استریم (بدون سقف): ترافیکش در صف
+    /// شبکه و وای‌فای جلو می‌افتد تا بیت‌ریت Meld ثابت بماند.
+    pub fn set_dscp(exe: &str, dscp: u32) -> Result<(), String> {
+        let key = open_policy_key(exe)?;
+        let res = (|| {
+            write_policy_identity(key, exe)?;
+            set_sz(key, "DSCP Value", &dscp.to_string())?;
+            // اگر قبلاً برای همین exe سقف ساخته شده بود، سقفش را بردار.
+            let tw = wide("Throttle Rate");
+            unsafe {
+                let _ = RegDeleteValueW(key, PCWSTR(tw.as_ptr()));
+            }
+            Ok::<(), String>(())
+        })();
+        unsafe {
+            let _ = RegCloseKey(key);
+        }
+        res
+    }
+
+    // ── گلوگاه شبکه‌ی ویندوز (NetworkThrottlingIndex) ──
+    // ویندوز به‌صورت پیش‌فرض ترافیک غیرچندرسانه‌ای را گلو می‌کند؛ موقع
+    // استریم آن را خاموش می‌کنیم و مقدار قبلی را نگه می‌داریم تا برگردد.
+    const SYSTEM_PROFILE: &str =
+        r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile";
+
+    fn throttle_marker_path() -> std::path::PathBuf {
+        let base = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        base.join("LagSlice").join("throttle-backup.txt")
+    }
+
+    fn open_system_profile(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Option<HKEY> {
+        let path_w = wide(SYSTEM_PROFILE);
+        let mut key = HKEY::default();
+        let rc = unsafe {
+            RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(path_w.as_ptr()), 0, access, &mut key)
+        };
+        if rc == ERROR_SUCCESS {
+            Some(key)
+        } else {
+            None
+        }
+    }
+
+    /// خاموش‌کردن گلوگاه (بهترین تلاش؛ اگر ادمین نباشیم بی‌صدا رد می‌شود).
+    /// مقدار قبلی در فایل نشانگر ذخیره می‌شود تا دقیق برگردد.
+    pub fn throttle_disable() {
+        let marker = throttle_marker_path();
+        if marker.exists() {
+            return; // قبلاً خاموش شده و بکاپ داریم؛ دوباره ننویس
+        }
+        let Some(key) = open_system_profile(KEY_ALL_ACCESS) else {
+            return;
+        };
+        let original = get_dword(key, "NetworkThrottlingIndex");
+        let saved = match original {
+            Some(v) => v.to_string(),
+            None => "absent".to_string(),
+        };
+        if let Some(dir) = marker.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if std::fs::write(&marker, saved).is_ok() {
+            let _ = set_dword(key, "NetworkThrottlingIndex", 0xFFFF_FFFF);
+        }
+        unsafe {
+            let _ = RegCloseKey(key);
+        }
+    }
+
+    /// برگرداندن گلوگاه به مقدار قبلی (از روی نشانگر) و پاک‌کردن نشانگر.
+    pub fn throttle_restore() {
+        let marker = throttle_marker_path();
+        let Ok(saved) = std::fs::read_to_string(&marker) else {
+            return;
+        };
+        if let Some(key) = open_system_profile(KEY_ALL_ACCESS) {
+            if saved == "absent" {
+                let nw = wide("NetworkThrottlingIndex");
+                unsafe {
+                    let _ = RegDeleteValueW(key, PCWSTR(nw.as_ptr()));
+                }
+            } else if let Ok(v) = saved.trim().parse::<u32>() {
+                let _ = set_dword(key, "NetworkThrottlingIndex", v);
+            }
+            unsafe {
+                let _ = RegCloseKey(key);
+            }
+        }
+        let _ = std::fs::remove_file(&marker);
     }
 
     /// ساخت/به‌روزرسانی پالیسی سقف آپلود برای یک exe. سقف Kbps است و به
@@ -469,7 +637,10 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{clear_all, list_policies, refresh_policies, remove_cap, set_cap};
+pub use imp::{
+    clear_all, list_policies, refresh_policies, remove_cap, set_cap, set_dscp,
+    throttle_disable, throttle_restore,
+};
 
 #[cfg(not(windows))]
 pub fn set_cap(_exe: &str, _cap_kbps: f64) -> Result<(), String> {
@@ -489,6 +660,14 @@ pub fn list_policies() -> Result<Vec<String>, String> {
 }
 #[cfg(not(windows))]
 pub fn refresh_policies() {}
+#[cfg(not(windows))]
+pub fn set_dscp(_exe: &str, _dscp: u32) -> Result<(), String> {
+    Err("فقط ویندوز".into())
+}
+#[cfg(not(windows))]
+pub fn throttle_disable() {}
+#[cfg(not(windows))]
+pub fn throttle_restore() {}
 
 #[cfg(test)]
 mod tests {
