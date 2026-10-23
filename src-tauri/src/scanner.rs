@@ -206,6 +206,174 @@ pub fn probe_server(server: &StreamServer) -> ProbeResult {
     }
 }
 
+/// استخراج (host, port) از یک RTMP URL یا هاست تنها — پورت پیش‌فرض ۱۹۳۵.
+/// پورت عین parse_rtmp نسخه‌ی پایتون (StreamScanner).
+pub fn parse_rtmp(text: &str) -> (String, u16) {
+    let text = text.trim();
+    if text.is_empty() {
+        return (String::new(), DEFAULT_RTMP_PORT);
+    }
+    let with_scheme = if text.contains("://") {
+        text.to_string()
+    } else {
+        format!("rtmp://{text}")
+    };
+    // برش دستی URL: scheme://[user@]host[:port][/path]
+    let rest = with_scheme.split("://").nth(1).unwrap_or("");
+    let authority = rest.split('/').next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or("");
+    if let Some(idx) = hostport.rfind(':') {
+        let (h, p) = hostport.split_at(idx);
+        if let Ok(port) = p[1..].parse::<u16>() {
+            return (h.to_lowercase(), port);
+        }
+        return (h.to_lowercase(), DEFAULT_RTMP_PORT);
+    }
+    (hostport.to_lowercase(), DEFAULT_RTMP_PORT)
+}
+
+/// نام پیشنهادی از روی هاست؛ مثلاً ir1.example.com ← ‏IR1
+/// و برای IP: «سرور <ip>». عین suggest_name نسخه‌ی پایتون.
+pub fn suggest_name(host: &str) -> String {
+    let host = host.trim().to_lowercase();
+    if host.is_empty() {
+        return String::new();
+    }
+    let is_ip = host.split('.').count() == 4
+        && host.split('.').all(|p| p.parse::<u8>().is_ok());
+    if is_ip {
+        return format!("سرور {host}");
+    }
+    let first = host.split('.').next().unwrap_or("");
+    let label: String = first
+        .replace(['-', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if label.is_empty() {
+        host
+    } else {
+        label.to_uppercase()
+    }
+}
+
+const REGION_RULES: &[(&str, &[&str], &[&str])] = &[
+    ("ir", &["ir"], &["iran", "tehran", "shiraz", "tabriz", "mashhad", "isfahan", "karaj", "ahvaz", "qom", "ika", "thr"]),
+    ("de", &["de"], &["germany", "berlin", "frankfurt", "munich", "nuremberg", "falkenstein", "fra"]),
+    ("fr", &["fr"], &["france", "paris", "roubaix", "gravelines", "par"]),
+    ("nl", &["nl"], &["netherlands", "amsterdam", "rotterdam", "ams"]),
+    ("uk", &["uk"], &["england", "london", "manchester", "lhr", "lon"]),
+    ("tr", &["tr"], &["turkey", "istanbul", "ankara", "ist"]),
+    ("ae", &["ae"], &["uae", "dubai", "emirates", "dxb"]),
+];
+
+const REGION_CODES: &[&str] = &["ir", "de", "fr", "nl", "uk", "tr", "ae"];
+
+/// ‏token به شکل «کدکشور + رقم‌ها» است؟ مثل ir1 یا fra2
+fn code_with_digits(token: &str, code: &str) -> bool {
+    token.len() > code.len()
+        && token.starts_with(code)
+        && token[code.len()..].chars().all(|c| c.is_ascii_digit())
+        || token == code
+}
+
+/// حدس منطقه از روی هاست (TLD، نام شهر، پیشوند کد کشور).
+/// عین detect_region نسخه‌ی پایتون.
+pub fn detect_region(host: &str) -> String {
+    let h = host.trim().to_lowercase();
+    if h.is_empty() {
+        return String::new();
+    }
+    let tokens: Vec<&str> = h
+        .split(['.', '-', '_'])
+        .filter(|t| !t.is_empty())
+        .collect();
+    let tld = tokens.last().copied().unwrap_or("");
+    for (region, tlds, words) in REGION_RULES {
+        if tlds.contains(&tld) {
+            return region.to_string();
+        }
+        for tok in &tokens {
+            if words.contains(tok) {
+                return region.to_string();
+            }
+            if REGION_CODES.iter().any(|c| code_with_digits(tok, c) && tlds.contains(c)) {
+                return region.to_string();
+            }
+            for w in *words {
+                if w.len() >= 3 && code_with_digits(tok, w) {
+                    return region.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// ساخت آبجکت سرور از یک RTMP URL یا هاست، با نام و منطقه‌ی خودکار
+/// (اگر دستی داده نشده باشند). عین import_rtmp نسخه‌ی پایتون.
+pub fn import_rtmp(text: &str, name: &str, region: &str) -> StreamServer {
+    let (host, port) = parse_rtmp(text);
+    // آی‌دی پایدار از روی هاست+پورت (برای دوباره‌شناسی در درون‌ریزی گروهی).
+    let mut hash: u64 = 5381;
+    for b in format!("{host}:{port}").bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(b as u64);
+    }
+    StreamServer {
+        id: format!("s{hash:x}"),
+        name: if name.trim().is_empty() {
+            suggest_name(&host)
+        } else {
+            name.trim().to_string()
+        },
+        region: if region.trim().is_empty() {
+            detect_region(&host)
+        } else {
+            region.trim().to_string()
+        },
+        host,
+        port,
+    }
+}
+
+/// نتیجه‌ی درون‌ریزی گروهی لینک‌ها.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportOutcome {
+    /// سرورهای تازه‌ای که باید به لیست اضافه شوند.
+    pub added: Vec<StreamServer>,
+    pub count: usize,
+}
+
+/// درون‌ریزی گروهی: هر خط یک RTMP URL (قالب اختیاری: نام | rtmp://...).
+/// تکراری‌ها (هاست+پورت تکراری نسبت به لیست موجود و خود متن) رد می‌شوند.
+/// عین import_rtmp_bulk نسخه‌ی پایتون.
+pub fn import_rtmp_bulk(text: &str, existing: &[StreamServer]) -> ImportOutcome {
+    let mut seen: std::collections::HashSet<(String, u16)> = existing
+        .iter()
+        .map(|s| (s.host.to_lowercase(), s.port))
+        .collect();
+    let mut added = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, link) = match line.split_once('|') {
+            Some((n, l)) => (n.trim(), l.trim()),
+            None => ("", line),
+        };
+        let (host, port) = parse_rtmp(link);
+        if host.is_empty() || !seen.insert((host.to_lowercase(), port)) {
+            continue;
+        }
+        added.push(import_rtmp(link, name, ""));
+    }
+    ImportOutcome {
+        count: added.len(),
+        added,
+    }
+}
+
 /// اسکن موازی همه‌ی سرورها (یک نخ به‌ازای هر سرور)؛ خروجی به ترتیب
 /// ورودی برمی‌گردد تا فرانت خودش بر اساس امتیاز مرتب کند.
 pub fn scan_all(servers: &[StreamServer]) -> Vec<ProbeResult> {
@@ -271,6 +439,37 @@ mod tests {
         let loaded = load_servers_from(&path);
         assert_eq!(loaded, saved);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_rtmp_variants() {
+        assert_eq!(parse_rtmp("rtmp://ir1.example.com:1936/live"), ("ir1.example.com".into(), 1936));
+        assert_eq!(parse_rtmp("example.com"), ("example.com".into(), DEFAULT_RTMP_PORT));
+        assert_eq!(parse_rtmp("10.0.0.5:1935"), ("10.0.0.5".into(), 1935));
+        assert_eq!(parse_rtmp(""), (String::new(), DEFAULT_RTMP_PORT));
+    }
+
+    #[test]
+    fn suggest_and_detect_like_streamscanner() {
+        assert_eq!(suggest_name("ir1.example.com"), "IR1");
+        assert_eq!(suggest_name("192.168.1.10"), "سرور 192.168.1.10");
+        assert_eq!(detect_region("ir1.example.com"), "ir");
+        assert_eq!(detect_region("fra.stream.de"), "de");
+        assert_eq!(detect_region("ams.example.com"), "nl");
+        assert_eq!(detect_region("example.org"), "");
+    }
+
+    #[test]
+    fn bulk_import_dedupes() {
+        let existing = vec![import_rtmp("rtmp://a.example.com", "", "")];
+        let out = import_rtmp_bulk(
+            "rtmp://a.example.com\nتهران | rtmp://ir2.example.com:1936/live\n# comment\n\nrtmp://ir2.example.com:1936",
+            &existing,
+        );
+        assert_eq!(out.count, 1);
+        assert_eq!(out.added[0].name, "تهران");
+        assert_eq!(out.added[0].region, "ir");
+        assert_eq!(out.added[0].port, 1936);
     }
 
     #[test]

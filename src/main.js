@@ -2,7 +2,7 @@
 // بیرون از تائوری (پیش‌نمایش مرورگر) داده‌ی نمونه نشان داده می‌شود.
 const invoke = window.__TAURI__?.core?.invoke;
 
-const APP_VERSION = "0.5.0";
+const APP_VERSION = "0.6.0";
 const SETTINGS_KEY = "lagslice.settings.v1";
 
 // پیش‌فرض‌ها دقیقاً مثل load_config نسخه‌ی پایتون.
@@ -74,6 +74,15 @@ const STRINGS = {
     scan_use_done: "سرور پینگ روی {host} تنظیم شد.",
     scan_del: "حذف",
     scan_need_host: "اول هاست سرور را وارد کن.",
+    scan_link: "لینک سرور (RTMP)",
+    scan_link_ph: "rtmp://host:1935/live",
+    scan_bulk: "درون‌ریزی گروهی (هر خط یک لینک)",
+    scan_bulk_ph: "rtmp://ir1.example.com/live",
+    scan_import: "درون‌ریزی",
+    scan_imported: "{count} سرور اضافه شد.",
+    scan_pick_best: "⭐ انتخاب بهترین سرور",
+    scan_active: "فعال",
+    scan_no_best: "هنوز سرور سالمی اسکن نشده است.",
     reserve_title: "رزرو آپلود برای استریم",
     reserve_hint: "مقداری از آپلود را برای Meld Studio رزرو کن؛ بقیه‌ی برنامه‌ها خودکار سقف می‌گیرند تا سهم استریم را نخورند.",
     reserve_label: "رزرو (Mbps)",
@@ -163,6 +172,15 @@ const STRINGS = {
     scan_use_done: "Ping server set to {host}.",
     scan_del: "Delete",
     scan_need_host: "Enter the server host first.",
+    scan_link: "Server link (RTMP)",
+    scan_link_ph: "rtmp://host:1935/live",
+    scan_bulk: "Bulk import (one link per line)",
+    scan_bulk_ph: "rtmp://ir1.example.com/live",
+    scan_import: "Import",
+    scan_imported: "{count} servers added.",
+    scan_pick_best: "⭐ Pick best server",
+    scan_active: "Active",
+    scan_no_best: "No healthy server has been scanned yet.",
     reserve_title: "Reserve upload for streaming",
     reserve_hint: "Reserve part of your upload for Meld Studio; other apps get capped automatically so they don't eat the stream's share.",
     reserve_label: "Reserve (Mbps)",
@@ -442,9 +460,14 @@ document.getElementById("setTheme").addEventListener("change", (e) => {
   applyTheme();
 });
 
+function pushTraySetting() {
+  if (invoke) invoke("set_close_to_tray", { enabled: !!settings.tray }).catch(() => {});
+}
+
 document.getElementById("setTray").addEventListener("change", (e) => {
   settings.tray = e.target.checked;
   saveSettings();
+  pushTraySetting();
 });
 
 document.getElementById("openGuide").addEventListener("click", () => {
@@ -476,7 +499,42 @@ document.getElementById("checkUpdate").addEventListener("click", async () => {
 let scanList = [];
 let scanResults = {};
 let scanLoaded = false;
+let activeServerId = localStorage.getItem("lagslice.activeServerId") || "";
 const SERVERS_PREVIEW_KEY = "lagslice.servers.preview";
+
+// تجزیه‌ی لینک RTMP در پیش‌نمایش مرورگر (در برنامه از هسته‌ی Rust می‌آید).
+function parseLinkPreview(text) {
+  const m = String(text || "").trim().replace(/^rtmps?:\/\//i, "");
+  const authority = m.split("/")[0];
+  const [host, port] = authority.split(":");
+  return { host: (host || "").toLowerCase(), port: parseInt(port, 10) || 1935 };
+}
+
+async function parseServerLink(text) {
+  if (invoke) {
+    try {
+      return await invoke("parse_server_link", { text });
+    } catch {}
+  }
+  const { host, port } = parseLinkPreview(text);
+  return { id: "s" + Date.now().toString(36), name: host ? host.split(".")[0].toUpperCase() : "", region: "", host, port };
+}
+
+// با وارد کردن لینک، نام و منطقه و هاست و پورت خودکار پر می‌شوند.
+let linkTimer = null;
+document.getElementById("scanLink").addEventListener("input", (e) => {
+  clearTimeout(linkTimer);
+  const text = e.target.value.trim();
+  if (!text) return;
+  linkTimer = setTimeout(async () => {
+    const s = await parseServerLink(text);
+    if (!s.host) return;
+    document.getElementById("scanHost").value = s.host;
+    document.getElementById("scanPort").value = s.port || 1935;
+    if (s.name) document.getElementById("scanName").value = s.name;
+    if (s.region) document.getElementById("scanRegion").value = s.region;
+  }, 350);
+});
 
 async function loadScanServers() {
   try {
@@ -522,7 +580,7 @@ function renderScan() {
       const url = s.host ? `rtmp://${s.host}:${s.port || 1935}/live` : "—";
       const isBest = !!(best && r && r.id === best.r.id);
       return `<tr${isBest ? ' class="best-row"' : ""}>
-        <td>${esc(s.name || "—")}${s.region ? ` <span class="dim">(${esc(s.region)})</span>` : ""}</td>
+        <td>${esc(s.name || "—")}${s.region ? ` <span class="dim">(${esc(s.region)})</span>` : ""}${s.id === activeServerId ? ` <span class="active-badge">⭐ ${esc(t("scan_active"))}</span>` : ""}</td>
         <td dir="ltr">${esc(url)}</td>
         <td>${r && r.ping_ms != null ? r.ping_ms.toFixed(0) : "—"}</td>
         <td>${r ? r.loss.toFixed(0) + "%" : "—"}</td>
@@ -558,23 +616,92 @@ function renderScan() {
 }
 
 document.getElementById("addServer").addEventListener("click", async () => {
-  const host = document.getElementById("scanHost").value.trim();
   const msg = document.getElementById("scanMsg");
+  const link = document.getElementById("scanLink").value.trim();
+  let host = document.getElementById("scanHost").value.trim();
+  let name = document.getElementById("scanName").value.trim();
+  let region = document.getElementById("scanRegion").value.trim();
+  let port = parseInt(document.getElementById("scanPort").value, 10);
+  let id = "s" + Date.now().toString(36);
+  // اگر لینک داده شده، مشخصات از روی لینک کامل می‌شوند (نام/منطقه خودکار).
+  if (link) {
+    const s = await parseServerLink(link);
+    if (s.host) {
+      host = s.host;
+      port = s.port || 1935;
+      id = s.id || id;
+      if (!name) name = s.name;
+      if (!region) region = s.region;
+    }
+  }
   if (!host) {
     msg.textContent = t("scan_need_host");
     return;
   }
-  const port = parseInt(document.getElementById("scanPort").value, 10);
   scanList.push({
-    id: "s" + Date.now().toString(36),
-    name: document.getElementById("scanName").value.trim() || host,
-    region: document.getElementById("scanRegion").value.trim(),
+    id,
+    name: name || host,
+    region,
     host,
     port: isNaN(port) ? 1935 : Math.min(65535, Math.max(1, port)),
   });
   document.getElementById("scanHost").value = "";
+  document.getElementById("scanLink").value = "";
   msg.textContent = "";
   await persistScanServers();
+});
+
+document.getElementById("importBulk").addEventListener("click", async () => {
+  const text = document.getElementById("scanBulk").value;
+  const msg = document.getElementById("scanMsg");
+  if (!text.trim()) return;
+  try {
+    let outcome;
+    if (invoke) {
+      outcome = await invoke("import_server_links", { text, existing: scanList });
+    } else {
+      const seen = new Set(scanList.map((s) => `${s.host.toLowerCase()}:${s.port}`));
+      const added = [];
+      for (const line of text.split(/\n+/)) {
+        const p = parseLinkPreview(line.includes("|") ? line.split("|")[1] : line);
+        if (!p.host || seen.has(`${p.host}:${p.port}`)) continue;
+        seen.add(`${p.host}:${p.port}`);
+        added.push({ id: "s" + Date.now().toString(36) + added.length, name: (line.includes("|") ? line.split("|")[0].trim() : "") || p.host, region: "", host: p.host, port: p.port });
+      }
+      outcome = { added, count: added.length };
+    }
+    if (outcome.added.length) {
+      scanList = scanList.concat(outcome.added);
+      await persistScanServers();
+    }
+    msg.textContent = fill(t("scan_imported"), { count: outcome.count });
+    document.getElementById("scanBulk").value = "";
+  } catch (e) {
+    msg.textContent = t("error_prefix") + e;
+  }
+});
+
+// انتخاب بهترین سرور: بهترین نتیجه‌ی اسکن (کمترین امتیازِ سالم) سرور
+// فعال می‌شود و به‌عنوان سرور پینگ/استریم برنامه تنظیم می‌گردد.
+document.getElementById("pickBest").addEventListener("click", () => {
+  const msg = document.getElementById("scanMsg");
+  const rows = scanList
+    .map((s) => ({ s, r: scanResults[s.id] }))
+    .filter((x) => x.r && x.r.ok)
+    .sort((a, b) => a.r.score - b.r.score);
+  if (!rows.length) {
+    msg.textContent = t("scan_no_best");
+    return;
+  }
+  const best = rows[0].s;
+  activeServerId = best.id;
+  localStorage.setItem("lagslice.activeServerId", activeServerId);
+  settings.servers = [best.host];
+  saveSettings();
+  fillSettingsForm();
+  refreshPing();
+  msg.textContent = fill(t("scan_best"), { name: best.name || best.host, url: `rtmp://${best.host}:${best.port || 1935}/live` });
+  renderScan();
 });
 
 document.getElementById("runScan").addEventListener("click", async () => {
@@ -609,6 +736,7 @@ document.getElementById("runScan").addEventListener("click", async () => {
 fillSettingsForm();
 applyTheme();
 applyLang();
+pushTraySetting();
 loadScanServers();
 refreshRates();
 refreshPing();

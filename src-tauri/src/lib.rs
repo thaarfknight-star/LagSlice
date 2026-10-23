@@ -18,6 +18,9 @@ struct AppState {
     /// لیست سرورهای استریمِ اسکنر — هنگام استارت از دیسک خوانده می‌شود
     /// (scanner::load_servers) و هر تغییری همان لحظه ذخیره می‌شود.
     servers: Mutex<Vec<scanner::StreamServer>>,
+    /// «بستن به سینی سیستم» — فرانت از روی تنظیمات کاربر پرش می‌کند؛
+    /// وقتی روشن است، دکمه‌ی بستن پنجره فقط آن را مخفی می‌کند.
+    close_to_tray: Mutex<bool>,
 }
 
 /// نرخ زنده‌ی آپلود/دانلود هر برنامه (Kbps).
@@ -249,6 +252,28 @@ async fn scan_servers(servers: Vec<scanner::StreamServer>) -> Vec<scanner::Probe
         .unwrap_or_default()
 }
 
+/// ساخت سرور از روی لینک RTMP: نام و منطقه و هاست و پورت خودکار
+/// پر می‌شوند (مثل پروژه‌ی StreamScanner).
+#[tauri::command]
+fn parse_server_link(text: String) -> scanner::StreamServer {
+    scanner::import_rtmp(&text, "", "")
+}
+
+/// درون‌ریزی گروهی لینک‌های RTMP (هر خط یک لینک) با حذف تکراری‌ها.
+#[tauri::command]
+fn import_server_links(
+    text: String,
+    existing: Vec<scanner::StreamServer>,
+) -> scanner::ImportOutcome {
+    scanner::import_rtmp_bulk(&text, &existing)
+}
+
+/// تنظیم «بستن به سینی سیستم» از روی تنظیمات فرانت.
+#[tauri::command]
+fn set_close_to_tray(state: tauri::State<AppState>, enabled: bool) {
+    *state.close_to_tray.lock().unwrap() = enabled;
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // بازیابی بعد از کرش — قبل از هر چیز: اگر اجرای قبلی کرش کرده یا
@@ -282,6 +307,7 @@ pub fn run() {
             last_rates: Mutex::new(Vec::new()),
             whitelist: Mutex::new(whitelist),
             servers: Mutex::new(servers),
+            close_to_tray: Mutex::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_app_rates,
@@ -298,8 +324,64 @@ pub fn run() {
             kill_process,
             get_servers,
             set_servers,
-            scan_servers
+            scan_servers,
+            parse_server_link,
+            import_server_links,
+            set_close_to_tray
         ])
+        .setup(|app| {
+            // آیکن سینی سیستم با منوی «نمایش / خروج»؛ خروج واقعی از همین
+            // منو (یا وقتی حالت سینی خاموش است، با بستن پنجره) انجام می‌شود.
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::Manager;
+            let show_item = MenuItem::with_id(app, "show", "نمایش LagSlice", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "خروج", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))?;
+            TrayIconBuilder::with_id("main-tray")
+                .icon(icon)
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // بستن به سینی: اگر تنظیم روشن است، بستن پنجره فقط مخفی‌اش
+            // می‌کند و برنامه در سینی به کارش ادامه می‌دهد.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::Manager;
+                let state = window.state::<AppState>();
+                if *state.close_to_tray.lock().unwrap() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building LagSlice")
         .run(|_app, event| {

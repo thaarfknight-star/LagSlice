@@ -70,6 +70,11 @@
       <h2 data-i18n="scan_title">اسکن سرورهای استریم</h2>
       <p class="hint" data-i18n="scan_hint">سرورها با پینگ و تست اتصال RTMP سنجیده و امتیازدهی می‌شوند؛ امتیاز کمتر یعنی سرور بهتر.</p>
       <div class="row">
+        <label class="grow"><span data-i18n="scan_link">لینک سرور (RTMP)</span>
+          <input id="scanLink" type="text" dir="ltr" data-i18n-ph="scan_link_ph" placeholder="rtmp://host:1935/live" />
+        </label>
+      </div>
+      <div class="row">
         <label><span data-i18n="scan_name">نام</span>
           <input id="scanName" type="text" />
         </label>
@@ -84,6 +89,13 @@
         </label>
         <button id="addServer" data-i18n="scan_add">افزودن سرور</button>
         <button id="runScan" class="primary" data-i18n="scan_run">اسکن همه</button>
+        <button id="pickBest" data-i18n="scan_pick_best">⭐ انتخاب بهترین سرور</button>
+      </div>
+      <div class="row">
+        <label class="grow"><span data-i18n="scan_bulk">درون‌ریزی گروهی (هر خط یک لینک)</span>
+          <textarea id="scanBulk" rows="3" dir="ltr" data-i18n-ph="scan_bulk_ph" placeholder="rtmp://ir1.example.com/live"></textarea>
+        </label>
+        <button id="importBulk" data-i18n="scan_import">درون‌ریزی</button>
       </div>
       <p id="scanMsg" class="msg"></p>
       <p id="bestBanner" class="msg"></p>
@@ -419,12 +431,6 @@ SOFTWARE.</pre>
    See the License for the specific language governing permissions and
    limitations under the License.</pre>
       </details>
-
-      <p class="about-links">متن کامل لایسنس‌ها در ریپازیتوری برنامه:
-        <a class="btn-link" href="https://github.com/thaarfknight-star/LagSlice/blob/main/LICENSE-MIT" target="_blank" rel="noreferrer">LICENSE-MIT</a>
-        ·
-        <a class="btn-link" href="https://github.com/thaarfknight-star/LagSlice/blob/main/LICENSE-APACHE" target="_blank" rel="noreferrer">LICENSE-APACHE</a>
-      </p>
 
       <!-- به‌روزرسانی -->
       <h3 class="sec-head" data-i18n="set_sec_update">🔄 به‌روزرسانی</h3>
