@@ -2,7 +2,7 @@
 // بیرون از تائوری (پیش‌نمایش مرورگر) داده‌ی نمونه نشان داده می‌شود.
 const invoke = window.__TAURI__?.core?.invoke;
 
-let APP_VERSION = "0.9.1";
+let APP_VERSION = "0.9.2";
 // نسخه‌ی واقعی از خود برنامه (جلوگیری از کهنه‌ماندن ثابت دستی)
 window.__TAURI__?.app?.getVersion?.().then((v) => { if (v) APP_VERSION = v; }).catch(() => {});
 const SETTINGS_KEY = "lagslice.settings.v1";

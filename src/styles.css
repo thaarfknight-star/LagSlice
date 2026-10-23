@@ -70,7 +70,7 @@ body {
   margin-bottom: 14px;
 }
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand .bolt { font-size: 34px; filter: drop-shadow(0 0 10px var(--accent)); }
+.brand-logo { height: 46px; width: auto; filter: drop-shadow(0 0 10px rgba(0, 229, 255, .45)) drop-shadow(0 0 14px rgba(255, 0, 229, .25)); }
 .brand h1 { margin: 0; font-size: 26px; letter-spacing: .5px; }
 .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
 .net-summary { display: flex; gap: 12px; }
@@ -250,3 +250,6 @@ tr.best-row td { background: rgba(255, 0, 212, 0.10); font-weight: 600; }
 .prog-row .cap-input { width: 110px; }
 .check-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .hint { opacity: 0.7; font-size: 12px; }
+
+.about-logo { text-align: center; margin: 6px 0 2px; }
+.about-logo img { height: 84px; width: auto; filter: drop-shadow(0 0 12px rgba(0, 229, 255, .35)); }
