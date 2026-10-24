@@ -1798,7 +1798,7 @@ dependencies = [
 
 [[package]]
 name = "lagslice"
-version = "0.8.1"
+version = "0.9.3"
 dependencies = [
  "serde",
  "serde_json",

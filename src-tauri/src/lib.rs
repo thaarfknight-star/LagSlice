@@ -1,5 +1,6 @@
 mod monitor;
 mod qos;
+mod relay;
 mod scanner;
 mod updater;
 
@@ -25,6 +26,69 @@ struct AppState {
     /// موتور محدودیت (دکمه‌ی فعال‌سازی اصلی): وقتی فعال است، سقف‌ها
     /// زنده نگه داشته می‌شوند و تثبیت‌کننده‌ی استریم کار می‌کند.
     engine: Mutex<EngineState>,
+    /// رله‌ی تطبیقی RTMP — وضعیت و نخ پمپ در relay::RelayRuntime است؛
+    /// کلید استریم فقط در حافظه‌ی همان ساختار است و هرگز برنمی‌گردد.
+    relay: Mutex<relay::RelayRuntime>,
+}
+
+/// ردیف وضعیت رله برای فرانت (بدون کلید استریم).
+#[derive(Serialize)]
+struct RelayStatusRow {
+    running: bool,
+    target_host: String,
+    listen_addr: String,
+    current_kbps: u32,
+    capacity_ema_kbps: f64,
+    probe_kbps: f64,
+    at_top: bool,
+    forwarded_bytes: u64,
+    forwarded_msgs: u64,
+    dropped_gops: u64,
+    dropped_bytes: u64,
+    queue_bytes: usize,
+    uptime_secs: u64,
+    last_error: Option<String>,
+}
+
+/// شروع رله‌ی تطبیقی: Meld باید با Custom RTMP به 127.0.0.1:1935/live
+/// بفرستد؛ مقصد (ingest کیک) و کلیدش از فرانت می‌آیند و کلید فقط در
+/// حافظه می‌ماند.
+#[tauri::command]
+fn relay_start(
+    state: tauri::State<AppState>,
+    target_url: String,
+    stream_key: String,
+    top_kbps: u32,
+) -> Result<(), String> {
+    state.relay.lock().unwrap().start(&target_url, &stream_key, top_kbps)
+}
+
+/// توقف رله (نخ پمپ با پرچم توقف تمام می‌شود و join می‌شود).
+#[tauri::command]
+fn relay_stop(state: tauri::State<AppState>) {
+    state.relay.lock().unwrap().stop();
+}
+
+/// وضعیت زنده‌ی رله برای پنل فرانت.
+#[tauri::command]
+fn relay_status(state: tauri::State<AppState>) -> RelayStatusRow {
+    let s = state.relay.lock().unwrap().snapshot();
+    RelayStatusRow {
+        running: s.running,
+        target_host: s.target_host,
+        listen_addr: s.listen_addr,
+        current_kbps: s.current_kbps,
+        capacity_ema_kbps: s.capacity_ema_kbps,
+        probe_kbps: s.probe_kbps,
+        at_top: s.at_top,
+        forwarded_bytes: s.forwarded_bytes,
+        forwarded_msgs: s.forwarded_msgs,
+        dropped_gops: s.dropped_gops,
+        dropped_bytes: s.dropped_bytes,
+        queue_bytes: s.queue_bytes,
+        uptime_secs: s.uptime_secs,
+        last_error: s.last_error,
+    }
 }
 
 /// پارامترها و وضعیت زنده‌ی موتور محدودیت.
@@ -679,6 +743,7 @@ pub fn run() {
             servers: Mutex::new(servers),
             close_to_tray: Mutex::new(true),
             engine: Mutex::new(EngineState::default()),
+            relay: Mutex::new(relay::RelayRuntime::new()),
         })
         .invoke_handler(tauri::generate_handler![
             get_app_rates,
@@ -704,6 +769,9 @@ pub fn run() {
             parse_server_link,
             import_server_links,
             set_close_to_tray,
+            relay_start,
+            relay_stop,
+            relay_status,
             updater::check_update2,
             updater::download_update2,
             updater::cancel_update_download2,

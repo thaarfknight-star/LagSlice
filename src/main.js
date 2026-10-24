@@ -64,7 +64,41 @@ const STRINGS = {
     ping_label: "پینگ سرور",
     nav_main: "برنامه‌ها",
     nav_scan: "اسکن سرورها",
+    nav_relay: "رله‌ی تطبیقی",
+    nav_guide: "راهنما",
     nav_settings: "تنظیمات",
+    relay_title: "رله‌ی تطبیقی RTMP",
+    relay_hint: "وقتی بیت‌ریت شبکه نوسان دارد، ارسال مستقیم Meld به Kick باعث جمع‌شدن صف و رشد تأخیر می‌شود. رله استریم را روی همین سیستم تحویل می‌گیرد، ظرفیت واقعی مسیر تا سرور مقصد را می‌سنجد و بیت‌ریت خروجی را تطبیقی تنظیم می‌کند؛ به‌جای رشد تأخیر، فقط کمی فریم‌ریت کم می‌شود.",
+    relay_setup_title: "⚙ راه‌اندازی (یک بار)",
+    relay_step1: "از داشبورد Kick آدرس RTMP و کلید استریم را بردار و پایین وارد کن.",
+    relay_step2: "دکمه‌ی «شروع رله» را بزن.",
+    relay_step3: "در Meld یک خروجی Custom RTMP بساز: آدرس",
+    relay_step3b: "و کلید دلخواه (مثلاً",
+    relay_step3c: ")",
+    relay_step4: "در Meld روی Go Live بزن؛ رله خودش بقیه را انجام می‌دهد.",
+    relay_target: "آدرس RTMP مقصد (Kick)",
+    relay_target_ph: "rtmp://live-ingest.kick.example/live",
+    relay_key: "کلید استریم Kick",
+    relay_key_ph: "••••••••",
+    relay_top: "سقف بیت‌ریت (Mbps)",
+    relay_key_note: "کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.",
+    relay_start: "▶ شروع رله",
+    relay_stop: "⏹ توقف رله",
+    relay_status_title: "📊 وضعیت زنده",
+    relay_state_label: "وضعیت:",
+    relay_rung_label: "بیت‌ریت خروجی فعلی:",
+    relay_cap_label: "میانگین نرخ تخلیه:",
+    relay_probe_label: "نتیجه‌ی آخرین پروب:",
+    relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف:",
+    relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم Kick برگردان. رله کاملاً اختیاری است و بدون آن هم LagSlice مثل قبل کار می‌کند.",
+    guide_title: "📖 راهنمای LagSlice",
+    relay_running: "در حال اجرا ✅",
+    relay_stopped: "متوقف",
+    relay_at_top: "سقف",
+    relay_started: "رله شروع شد — حالا در Meld خروجی Custom RTMP را استارت بزن.",
+    relay_stopped_msg: "رله متوقف شد.",
+    relay_err_url: "آدرس مقصد باید با rtmp:// شروع شود.",
+    relay_err_key: "کلید استریم را وارد کن.",
     scan_title: "اسکن سرورهای استریم",
     scan_hint: "سرورها با پینگ و تست اتصال RTMP سنجیده و امتیازدهی می‌شوند؛ امتیاز کمتر یعنی سرور بهتر.",
     scan_name: "نام",
@@ -162,8 +196,7 @@ const STRINGS = {
     set_sec_contact: "💬 پشتیبانی",
     set_telegram_btn: "باز کردن در تلگرام @tha_arf",
     set_sec_help: "📖 راهنما",
-    set_open_guide: "باز کردن فایل راهنما",
-    guide_missing: "فایل راهنما (LagSlice-guide-fa.pdf) هنوز به نسخه‌ی Rust اضافه نشده است.",
+    set_open_guide: "باز کردن راهنمای داخل‌برنامه‌ای",
     set_sec_about: "ℹ درباره / لایسنس",
     set_sec_update: "🔄 به‌روزرسانی",
     set_update_check: "بررسی به‌روزرسانی",
@@ -193,7 +226,41 @@ const STRINGS = {
     ping_label: "Server ping",
     nav_main: "Apps",
     nav_scan: "Server scan",
+    nav_relay: "Adaptive relay",
+    nav_guide: "Guide",
     nav_settings: "Settings",
+    relay_title: "Adaptive RTMP relay",
+    relay_hint: "When network bitrate fluctuates, sending directly from Meld to Kick queues frames up and delay grows. The relay takes the stream on this same machine, measures the real path capacity to the destination, and adapts the output bitrate — instead of growing delay, you only lose a little frame rate.",
+    relay_setup_title: "⚙ Setup (once)",
+    relay_step1: "Copy the RTMP URL and stream key from your Kick dashboard and enter them below.",
+    relay_step2: "Press “Start relay”.",
+    relay_step3: "In Meld, create a Custom RTMP output with URL",
+    relay_step3b: "and any key (e.g.",
+    relay_step3c: ")",
+    relay_step4: "Press Go Live in Meld; the relay handles the rest.",
+    relay_target: "Destination RTMP URL (Kick)",
+    relay_target_ph: "rtmp://live-ingest.kick.example/live",
+    relay_key: "Kick stream key",
+    relay_key_ph: "••••••••",
+    relay_top: "Bitrate cap (Mbps)",
+    relay_key_note: "The key stays on this machine only (app memory + the embedded browser's local storage); it is never sent anywhere and never logged.",
+    relay_start: "▶ Start relay",
+    relay_stop: "⏹ Stop relay",
+    relay_status_title: "📊 Live status",
+    relay_state_label: "Status:",
+    relay_rung_label: "Current output bitrate:",
+    relay_cap_label: "Avg drain rate:",
+    relay_probe_label: "Last probe result:",
+    relay_stats_label: "Sent / GOPs dropped / queue:",
+    relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct Kick output. The relay is fully optional — LagSlice works as before without it.",
+    guide_title: "📖 LagSlice guide",
+    relay_running: "Running ✅",
+    relay_stopped: "Stopped",
+    relay_at_top: "cap",
+    relay_started: "Relay started — now start the Custom RTMP output in Meld.",
+    relay_stopped_msg: "Relay stopped.",
+    relay_err_url: "The destination URL must start with rtmp://.",
+    relay_err_key: "Enter the stream key.",
     scan_title: "Stream server scan",
     scan_hint: "Servers are measured with ping and an RTMP connection test and scored; a lower score means a better server.",
     scan_name: "Name",
@@ -291,8 +358,7 @@ const STRINGS = {
     set_sec_contact: "💬 Support",
     set_telegram_btn: "Open in Telegram @tha_arf",
     set_sec_help: "📖 Guide",
-    set_open_guide: "Open guide file",
-    guide_missing: "The guide file (LagSlice-guide-fa.pdf) has not been added to the Rust build yet.",
+    set_open_guide: "Open in-app guide",
     set_sec_about: "ℹ About / License",
     set_sec_update: "🔄 Updates",
     set_update_check: "Check for updates",
@@ -514,18 +580,125 @@ document.getElementById("clearCaps").addEventListener("click", async () => {
   document.getElementById("reserveMsg").textContent = t("caps_cleared");
 });
 
-// ---------- ناوبری سه نما: برنامه‌ها / اسکن سرورها / تنظیمات ----------
+// ---------- ناوبری پنج نما: برنامه‌ها / اسکن / رله / راهنما / تنظیمات ----------
 function showView(which) {
   document.getElementById("viewMain").classList.toggle("hidden", which !== "main");
   document.getElementById("viewScan").classList.toggle("hidden", which !== "scan");
+  document.getElementById("viewRelay").classList.toggle("hidden", which !== "relay");
+  document.getElementById("viewGuide").classList.toggle("hidden", which !== "guide");
   document.getElementById("viewSettings").classList.toggle("hidden", which !== "settings");
   document.getElementById("navMain").classList.toggle("active", which === "main");
   document.getElementById("navScan").classList.toggle("active", which === "scan");
+  document.getElementById("navRelay").classList.toggle("active", which === "relay");
+  document.getElementById("navGuide").classList.toggle("active", which === "guide");
   document.getElementById("navSettings").classList.toggle("active", which === "settings");
 }
 document.getElementById("navMain").addEventListener("click", () => showView("main"));
 document.getElementById("navScan").addEventListener("click", () => showView("scan"));
+document.getElementById("navRelay").addEventListener("click", () => showView("relay"));
+document.getElementById("navGuide").addEventListener("click", () => showView("guide"));
 document.getElementById("navSettings").addEventListener("click", () => showView("settings"));
+
+// ---------- رله‌ی تطبیقی: شروع/توقف + وضعیت زنده (پولینگ ۲ ثانیه‌ای) ----------
+const RELAY_TARGET_KEY = "lagslice.relayTarget";
+let relayTimer = null;
+let relayRunning = false;
+
+function loadRelayTarget() {
+  try {
+    const raw = localStorage.getItem(RELAY_TARGET_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && typeof d === "object") {
+        if (d.url) document.getElementById("relayTarget").value = d.url;
+        if (d.key) document.getElementById("relayKey").value = d.key;
+        if (d.top) document.getElementById("relayTop").value = d.top;
+      }
+    }
+  } catch {}
+}
+
+function renderRelayStatus(s) {
+  const fmtMB = (b) => (b / 1048576).toFixed(1) + " MB";
+  document.getElementById("relayState").textContent = s.running
+    ? t("relay_running")
+    : t("relay_stopped");
+  document.getElementById("relayRung").textContent = s.running
+    ? s.current_kbps + " Kbps" + (s.at_top ? " (" + t("relay_at_top") + ")" : "")
+    : "—";
+  document.getElementById("relayCap").textContent = s.running
+    ? Math.round(s.capacity_ema_kbps) + " Kbps"
+    : "—";
+  document.getElementById("relayProbe").textContent = s.running && s.probe_kbps > 0
+    ? Math.round(s.probe_kbps) + " Kbps"
+    : "—";
+  document.getElementById("relayStats").textContent = s.running
+    ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB"
+    : "—";
+  document.getElementById("relayError").textContent = s.last_error || "";
+  document.getElementById("relayStart").disabled = !!s.running;
+  document.getElementById("relayStop").disabled = !s.running;
+}
+
+async function pollRelayStatus() {
+  try {
+    const s = await invoke("relay_status");
+    relayRunning = !!s.running;
+    renderRelayStatus(s);
+    if (!s.running && relayTimer) {
+      clearInterval(relayTimer);
+      relayTimer = null;
+    }
+  } catch (e) {
+    document.getElementById("relayError").textContent = String(e);
+  }
+}
+
+document.getElementById("relayStart").addEventListener("click", async () => {
+  const url = document.getElementById("relayTarget").value.trim();
+  const key = document.getElementById("relayKey").value;
+  const topMbps = parseFloat(document.getElementById("relayTop").value);
+  if (!url.startsWith("rtmp://")) {
+    document.getElementById("relayMsg").textContent = t("relay_err_url");
+    return;
+  }
+  if (!key.trim()) {
+    document.getElementById("relayMsg").textContent = t("relay_err_key");
+    return;
+  }
+  const topKbps = Math.round((isNaN(topMbps) ? 8 : topMbps) * 1000);
+  try {
+    await invoke("relay_start", { targetUrl: url, streamKey: key, topKbps });
+    try {
+      localStorage.setItem(RELAY_TARGET_KEY, JSON.stringify({ url, key, top: topMbps }));
+    } catch {}
+    document.getElementById("relayMsg").textContent = t("relay_started");
+    relayRunning = true;
+    if (relayTimer) clearInterval(relayTimer);
+    relayTimer = setInterval(pollRelayStatus, 2000);
+    pollRelayStatus();
+  } catch (e) {
+    document.getElementById("relayMsg").textContent = String(e);
+  }
+});
+
+document.getElementById("relayStop").addEventListener("click", async () => {
+  try {
+    await invoke("relay_stop");
+  } catch (e) {
+    document.getElementById("relayMsg").textContent = String(e);
+  }
+  relayRunning = false;
+  if (relayTimer) {
+    clearInterval(relayTimer);
+    relayTimer = null;
+  }
+  document.getElementById("relayMsg").textContent = t("relay_stopped_msg");
+  pollRelayStatus();
+});
+
+loadRelayTarget();
+pollRelayStatus();
 
 // ---------- زبان و تم ----------
 function applyLang() {
@@ -609,7 +782,7 @@ if (settings.active && invoke) {
 });
 
 document.getElementById("openGuide").addEventListener("click", () => {
-  document.getElementById("guideMsg").textContent = t("guide_missing");
+  showView("guide");
 });
 
 // ---------- همه‌ی برنامه‌ها: انتخاب (مجاز)، سقف و بستن انتخاب‌نشده‌ها ----------
