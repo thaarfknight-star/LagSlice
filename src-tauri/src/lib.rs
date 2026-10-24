@@ -415,12 +415,16 @@ fn set_engine_active(
 }
 
 /// پروسه‌هایی که هرگز نباید بسته شوند (همتای NEVER_TOUCH نسخه‌ی پایتون).
+/// msedgewebview2.exe موتور نمایش خود برنامه است (زیر Program Files یا
+/// AppData، نه SystemRoot) — اگر جارو آن را بکشد، پنجره سفید و بی‌جان
+/// می‌ماند (باگ ۰٫۹٫۳). LagSliceUpdater.exe هم هلپر آپدیت خود برنامه است.
 const NEVER_TOUCH: &[&str] = &[
     "system", "registry", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe",
     "services.exe", "lsass.exe", "svchost.exe", "fontdrvhost.exe", "dwm.exe",
     "explorer.exe", "spoolsv.exe", "taskhost.exe", "taskhostw.exe", "conhost.exe",
     "sihost.exe", "ctfmon.exe", "searchindexer.exe", "securityhealthservice.exe",
     "msmpeng.exe", "audiodg.exe",
+    "msedgewebview2.exe", "LagSliceUpdater.exe",
 ];
 
 /// بستن خام یک PID با taskkill (بدون گارد — کالر گاردها را خودش چک می‌کند).
@@ -530,8 +534,10 @@ fn take_closed_log(state: tauri::State<AppState>) -> Vec<String> {
 }
 
 /// جاروی بستن برنامه‌های انتخاب‌نشده. گاردها: فهرست NEVER_TOUCH، خود برنامه،
-/// هر پردازه‌ای که مسیرش زیر پوشه‌ی ویندوز است و برنامه‌های مجاز (whitelist +
-/// برنامه‌ی استریم). only_network=true یعنی فقط برنامه‌های دارای ترافیک فعلی.
+/// هر پردازه‌ای که مسیرش زیر پوشه‌ی ویندوز است، هر پردازه‌ای که نامش شامل
+/// webview است (دفاع در عمق برای موتور نمایش، مستقل از نام دقیق فایل)،
+/// و برنامه‌های مجاز (whitelist + برنامه‌ی استریم). only_network=true یعنی
+/// فقط برنامه‌های دارای ترافیک فعلی.
 /// خروجی: نام برنامه‌هایی که بسته شدند (بدون تکرار).
 fn sweep_unselected(state: &AppState, only_network: bool) -> Vec<String> {
     let (keep, stream_app) = {
@@ -565,6 +571,12 @@ fn sweep_unselected(state: &AppState, only_network: bool) -> Vec<String> {
             continue;
         }
         if NEVER_TOUCH.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
+            continue;
+        }
+        // دفاع در عمق: هر پردازه‌ای که نامش شامل webview است، موتور نمایش
+        // است (خود برنامه یا برنامه‌ی دیگر) و هرگز نباید با جارو کشته شود.
+        // lname از قبل lowercase شده است.
+        if lname.contains("webview") {
             continue;
         }
         if !p.path.is_empty() && p.path.to_lowercase().starts_with(&win_dir) {
