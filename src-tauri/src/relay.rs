@@ -41,13 +41,15 @@ pub enum RelayDecision {
 
 /// کنترل‌کننده‌ی نردبان با هیسترزیس نامتقارن — پایین سریع، بالا کند:
 /// پایین‌آمدن = ۲ پنجره‌ی بد پیاپی (تأخیر دشمن است، معطل نمی‌کنیم)؛
-/// بالارفتن = ۳ پنجره‌ی خوب پیاپی و هر پله فقط یک قدم (از نوسان جلوگیری
-/// می‌کند). آستانه‌ها با حاشیه‌اند تا روی مرز نوسان نکنیم.
+/// بالارفتن = از ۳ پروب اخیر دست‌کم ۲ پروب بالای پله‌ی بالاتر × ۱٫۰۵
+/// (معادل میانه‌ی ۳ پروب اخیر با ۵٪ حاشیه)، هر پله فقط یک قدم.
+/// آستانه‌ها با حاشیه‌اند تا روی مرز نوسان نکنیم.
 pub struct LadderController {
     pub rungs: Vec<u32>,
     pub idx: usize,
     bad_windows: u32,
-    probe_good: u32,
+    /// ۳ پروب اخیر (قدیمی‌ترین اول) برای قانون صعود میانه‌ای.
+    probe_hist: std::collections::VecDeque<f64>,
     pub capacity_ema_kbps: f64,
 }
 
@@ -67,7 +69,7 @@ impl LadderController {
             rungs,
             idx: 0,
             bad_windows: 0,
-            probe_good: 0,
+            probe_hist: std::collections::VecDeque::new(),
             capacity_ema_kbps: 0.0,
         }
     }
@@ -98,7 +100,7 @@ impl LadderController {
         let cur = self.current_kbps() as f64;
         if self.capacity_ema_kbps < cur * 0.85 {
             self.bad_windows += 1;
-            self.probe_good = 0;
+            self.probe_hist.clear();
             if self.bad_windows >= 2 && self.idx + 1 < self.rungs.len() {
                 self.idx += 1;
                 self.bad_windows = 0;
@@ -112,27 +114,41 @@ impl LadderController {
 
     /// نمونه‌ی پنجره‌ی پروب (ارسال بدون سقف سطل توکن). فقط همین نمونه
     /// برای بالارفتن معتبر است، چون drain در آن واقعاً ظرفیت سوکت را
-    /// نشان می‌دهد، نه سقف مصنوعی. بالارفتن: پروب > پله‌ی بالاتر × ۱٫۱۰
-    /// در ۳ پروب خوب پیاپی، هر بار فقط یک پله.
-    /// (حاشیه‌ی بزرگ‌تر، مثل ۲۵٪، باگ دارد: اگر ظرفیت واقعی به ۹۰۰۰
-    /// برگردد، میانگین نمایی هیچ‌وقت از ۸۰۰۰×۱٫۲۵=۱۰۰۰۰ رد نمی‌شود و
-    /// پله برای همیشه پایین می‌ماند.)
+    /// نشان می‌دهد، نه سقف مصنوعی. بالارفتن (قانون ۰٫۹٫۸): از ۳ پروب
+    /// اخیر دست‌کم ۲ پروب بالای پله‌ی بالاتر × ۱٫۰۵ باشند — معادل
+    /// میانه‌ی ۳ پروب اخیر با ۵٪ حاشیه — هر بار فقط یک پله.
+    /// قانون قبلی (۳ پروب پیاپی بالای ×۱٫۱۰) روی مسیر پرنوسان عملاً
+    /// هیچ‌وقت صعود نمی‌داد: لاگ ۰٫۹٫۷ با پروب‌های ۲۰۲۱–۳۰۲۴ هیچ‌وقت
+    /// ۳تای پیاپی بالای ۲۷۵۰ نداشت و نردبان ۸۵ ثانیه روی کف ۱۵۰۰ قفل
+    /// ماند، در حالی که ظرفیت واقعی مسیر ~۲۵۰۰ بود. دلیل اصولی قانون
+    /// تازه: با سقف سن ۰٫۹٫۶، صعود بیش‌ازحد فقط افت فریمِ محدود
+    /// می‌آورد ولی ماندن پایین، عقب‌ماندگی بی‌نهایت در Meld می‌سازد —
+    /// پس نردبان باید ظرفیت را تعقیب کند، نه در کف بماند. نزول همان
+    /// ۲ پنجره‌ی بد می‌ماند تا صعود اشتباه سریع اصلاح شود.
     pub fn note_probe(&mut self, probe_kbps: f64) -> RelayDecision {
         if self.idx == 0 {
-            self.probe_good = 0;
+            self.probe_hist.clear();
             return RelayDecision::Hold;
         }
-        let next = self.rungs[self.idx - 1] as f64;
-        if probe_kbps > next * 1.10 {
-            self.probe_good += 1;
-            if self.probe_good >= 3 {
+        self.probe_hist.push_back(probe_kbps);
+        while self.probe_hist.len() > 3 {
+            self.probe_hist.pop_front();
+        }
+        // میانه‌ی ۳ پروب اخیر لازم است: با کمتر از ۳ نمونه، هنوز
+        // پنجره‌ی کامل نداریم و صعود نمی‌کنیم.
+        if self.probe_hist.len() == 3 {
+            let next = self.rungs[self.idx - 1] as f64;
+            let good = self
+                .probe_hist
+                .iter()
+                .filter(|p| **p > next * 1.05)
+                .count();
+            if good >= 2 {
                 self.idx -= 1;
-                self.probe_good = 0;
+                self.probe_hist.clear();
                 self.bad_windows = 0;
                 return RelayDecision::StepUp;
             }
-        } else {
-            self.probe_good = 0;
         }
         RelayDecision::Hold
     }
@@ -1679,31 +1695,65 @@ mod tests {
     }
 
     #[test]
-    fn ladder_probe_steps_up_after_three_good_probes() {
+    fn ladder_probe_steps_up_on_two_of_last_three() {
         let mut l = LadderController::new(8000);
         l.note_capacity(4000.0);
         l.note_capacity(4000.0); // رفت روی ۶۰۰۰
         assert_eq!(l.current_kbps(), 6000);
-        // پروب باید از ۸۰۰۰×۱٫۱۰=۸۸۰۰ رد شود؛ ۸۸۰۰ دقیق کافی نیست.
+        // آستانه‌ی صعود ۸۰۰۰×۱٫۰۵=۸۴۰۰ است؛ پنجره‌ی ناقص (کمتر از
+        // ۳ پروب) صعود نمی‌دهد، ولی پنجره‌ی کامل با ۳تای خوب می‌دهد.
         assert_eq!(l.note_probe(8800.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
         assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
         assert_eq!(l.note_probe(9000.0), RelayDecision::StepUp);
         assert_eq!(l.current_kbps(), 8000);
     }
 
     #[test]
-    fn ladder_probe_resets_on_bad_probe() {
+    fn ladder_probe_single_bad_probe_does_not_block_climb() {
+        // قانون میانه‌ای ۰٫۹٫۸: یک پروب بد وسط پنجره، صعود را خراب
+        // نمی‌کند — برخلاف قانون پیاپی قبلی که شمارنده را صفر می‌کرد.
         let mut l = LadderController::new(8000);
         l.note_capacity(4000.0);
         l.note_capacity(4000.0);
         assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
         assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        // یک پروب بد شمارنده را صفر می‌کند: دو پروب خوب بعدی کافی نیست.
+        assert_eq!(l.note_probe(5000.0), RelayDecision::StepUp);
+        assert_eq!(l.current_kbps(), 8000);
+    }
+
+    #[test]
+    fn ladder_probe_two_bad_probes_block_climb() {
+        // ولی دو پروب بد در پنجره‌ی ۳تایی، صعود را می‌گیرد.
+        let mut l = LadderController::new(8000);
+        l.note_capacity(4000.0);
+        l.note_capacity(4000.0);
+        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
         assert_eq!(l.note_probe(5000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(5000.0), RelayDecision::Hold);
         assert_eq!(l.current_kbps(), 6000);
+    }
+
+    #[test]
+    fn ladder_climbs_on_real_097_log_probes() {
+        // رگرسیون لاگ ۰٫۹٫۷: نردبان روی کف ۱۵۰۰ با پروب‌های
+        // ۲۳۷۳، ۲۰۲۷، ۲۸۶۱، ۲۰۲۱، ۲۸۵۱، ۲۱۳۰، ۲۵۸۴، ۳۰۲۴.
+        // آستانه‌ی صعود به ۲۵۰۰ برابر ۲۵۰۰×۱٫۰۵=۲۶۲۵ است؛ قانون
+        // قبلی (۳ پیاپی بالای ۲۷۵۰) هیچ‌وقت صعود نمی‌داد، قانون
+        // تازه دقیقاً در پروب پنجم (۲۸۵۱) صعود می‌دهد و بعد روی
+        // ۲۵۰۰ می‌ماند (آستانه‌ی ۴۰۰۰×۱٫۰۵=۴۲۰۰ دست‌نیافتنی است).
+        let mut l = LadderController::new(8000);
+        l.idx = 4; // پله‌ی ۱۵۰۰
+        assert_eq!(l.current_kbps(), 1500);
+        assert_eq!(l.note_probe(2373.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(2027.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(2861.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(2021.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(2851.0), RelayDecision::StepUp);
+        assert_eq!(l.current_kbps(), 2500);
+        assert_eq!(l.note_probe(2130.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(2584.0), RelayDecision::Hold);
+        assert_eq!(l.note_probe(3024.0), RelayDecision::Hold);
+        assert_eq!(l.current_kbps(), 2500);
     }
 
     #[test]
