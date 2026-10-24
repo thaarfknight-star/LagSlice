@@ -55,7 +55,7 @@ pub struct LadderController {
 
 impl LadderController {
     pub fn new(top_kbps: u32) -> Self {
-        let mut rungs: Vec<u32> = vec![8000, 6000, 4000, 2500, 1500]
+        let mut rungs: Vec<u32> = vec![8000, 6000, 5000, 4000, 2500, 1500]
             .into_iter()
             .filter(|r| *r <= top_kbps)
             .collect();
@@ -894,7 +894,7 @@ impl RelayRuntime {
         let target = format!("rtmp://{host}:{port}/{app}");
         self.handle = Some(std::thread::spawn(move || {
             let res = run_pump(
-                &stop,
+                stop,
                 &stats,
                 &ladder,
                 &queue_bytes,
@@ -1319,8 +1319,58 @@ fn wait_command_any(
 }
 
 /// حلقه‌ی اصلی پمپ: Meld ←→ ingest مقصد (در عمل MasterStream).
-fn run_pump(
+/// نگهبان: با خروج از run_pump به هر دلیل (عادی، خطا، panic)،
+/// پرچم توقف را می‌زند تا نخ خواننده یتیم نماند و تا timeout
+/// خواندن ۲۰۰ms بعد خودش خارج شود.
+struct StopOnDrop(Arc<AtomicBool>);
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// نخ خواننده‌ی Meld (۰٫۹٫۹): تهاجمی می‌خواند و در صف مشترک
+/// می‌ریزد — سرعت خواندن به نرخ توکن گره نیست. هر دو سقف
+/// (بایت + سن) روی push و زیر قفل اعمال می‌شوند تا اگر پمپ
+/// مرده/ایستاده باشد، حافظه حول ۲ مگ + یک پیام بماند. قفل فقط
+/// دور push نگه داشته می‌شود، هرگز دور خواندن شبکه.
+/// با خطای خواندن، پرچم توقف مشترک را می‌زند تا پمپ سریع خارج
+/// شود؛ خطا به‌عنوان نتیجه‌ی نخ برمی‌گردد و run_pump آن را با
+/// نتیجه‌ی پمپ ترکیب می‌کند.
+fn run_reader(
+    mut meld_conn: ChunkConn,
+    queue: &Mutex<OutQueue>,
     stop: &AtomicBool,
+) -> Result<(), String> {
+    while !stop.load(Ordering::SeqCst) {
+        match meld_conn.read_message() {
+            Ok(Some((h, body))) => match h.msg_type {
+                8 | 9 | 18 => {
+                    let is_kf = h.msg_type == 9 && is_keyframe_tag(&body);
+                    let mut q = queue.lock().unwrap();
+                    q.push(QueuedMsg {
+                        msg_type: h.msg_type,
+                        timestamp: h.timestamp,
+                        payload: body,
+                        is_keyframe: is_kf,
+                        enqueued_at: Instant::now(),
+                    });
+                    q.enforce_age(Instant::now());
+                }
+                _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
+            },
+            Ok(None) => {} // timeout ۲۰۰ms: پرچم توقف دوباره چک می‌شود
+            Err(e) => {
+                stop.store(true, Ordering::SeqCst);
+                return Err(format!("خواندن از Meld قطع شد: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_pump(
+    stop: Arc<AtomicBool>,
     stats: &Mutex<RelayStats>,
     ladder: &Mutex<LadderController>,
     queue_bytes: &Mutex<usize>,
@@ -1518,7 +1568,7 @@ fn run_pump(
             env!("CARGO_PKG_VERSION")
         ),
     );
-    let mut queue = OutQueue::new(MAX_QUEUE_BYTES);
+    let queue = Arc::new(Mutex::new(OutQueue::new(MAX_QUEUE_BYTES)));
     let mut bucket = TokenBucket::new(ladder.lock().unwrap().current_kbps() as f64);
     let mut window_start = Instant::now();
     let mut window_bytes: u64 = 0;
@@ -1527,39 +1577,39 @@ fn run_pump(
     let pump_start = Instant::now();
     let mut last_log = pump_start;
 
-    while !stop.load(Ordering::SeqCst) {
-        // خواندن از Meld (timeout یعنی «فعلاً چیزی نیست»، خطا یعنی قطع).
-        match meld_conn.read_message() {
-            Ok(Some((h, body))) => match h.msg_type {
-                8 | 9 | 18 => {
-                    let is_kf = h.msg_type == 9 && is_keyframe_tag(&body);
-                    queue.push(QueuedMsg {
-                        msg_type: h.msg_type,
-                        timestamp: h.timestamp,
-                        payload: body,
-                        is_keyframe: is_kf,
-                        enqueued_at: Instant::now(),
-                    });
-                }
-                _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
-            },
-            Ok(None) => {}
-            Err(e) => return Err(format!("خواندن از Meld قطع شد: {e}")),
-        }
-        // سقف سن صف — قبل از ارسال: GOPای که موقع بلاک‌شدن write
-        // کهنه شده باشد هم نباید به‌عنوان مدیای تازه فرستاده شود.
-        queue.enforce_age(Instant::now());
+    // جداسازی ۰٫۹٫۹: نخ خواننده Meld را تهاجمی می‌خواند و در صف
+    // مشترک می‌ریزد؛ حلقه‌ی پمپ فقط با سقف توکن می‌فرستد. نگهبان
+    // تضمین می‌کند با هر خروجی از run_pump، پرچم توقف زده شود.
+    let _stop_guard = StopOnDrop(stop.clone());
+    let mut pump_res: Result<(), String> = Ok(());
+    let reader_handle = {
+        let reader_queue = queue.clone();
+        let reader_stop = stop.clone();
+        std::thread::spawn(move || run_reader(meld_conn, &reader_queue, &reader_stop))
+    };
+    'pump: while !stop.load(Ordering::SeqCst) {
+        // سقف سن صف روی pop هم — GOPای که موقع بلاک‌شدن write
+        // کهنه شده باشد نباید به‌عنوان مدیای تازه فرستاده شود.
+        let (q_bytes, q_age, d_gops, d_bytes) = {
+            let mut q = queue.lock().unwrap();
+            q.enforce_age(Instant::now());
+            (
+                q.bytes,
+                q.msgs
+                    .front()
+                    .map(|f| Instant::now().duration_since(f.enqueued_at).as_secs_f64())
+                    .unwrap_or(0.0),
+                q.dropped_gops,
+                q.dropped_bytes,
+            )
+        };
         // آمار صف برای فرانت
-        *queue_bytes.lock().unwrap() = queue.bytes;
-        *queue_age.lock().unwrap() = queue
-            .msgs
-            .front()
-            .map(|f| Instant::now().duration_since(f.enqueued_at).as_secs_f64())
-            .unwrap_or(0.0);
+        *queue_bytes.lock().unwrap() = q_bytes;
+        *queue_age.lock().unwrap() = q_age;
         {
             let mut st = stats.lock().unwrap();
-            st.dropped_gops = queue.dropped_gops;
-            st.dropped_bytes = queue.dropped_bytes;
+            st.dropped_gops = d_gops;
+            st.dropped_bytes = d_bytes;
         }
         // نمونه‌ی لاگ هر ۵ ثانیه: همان عددهای پنل، از همان
         // Mutexهایی که فرانت می‌خواند — پس لاگ و پنل یکی‌اند.
@@ -1588,16 +1638,25 @@ fn run_pump(
             append_log_line(log_path, &line);
         }
         // ارسال: در پنجره‌ی پروب بدون سقف، وگرنه تا جایی که توکن هست.
-        while let Some(front) = queue.msgs.front() {
-            let need = front.payload.len();
-            if !probe_active && !bucket.try_take(need) {
-                break;
-            }
-            let m = queue.msgs.pop_front().unwrap();
-            queue.bytes = queue.bytes.saturating_sub(m.payload.len());
+        // قانون طلایی: قفل صف هرگز روی write نگه داشته نمی‌شود —
+        // اول pop زیر قفل، بعد unlock، بعد encode + write.
+        loop {
+            let m = {
+                let mut q = queue.lock().unwrap();
+                let Some(need) = q.msgs.front().map(|f| f.payload.len()) else {
+                    break;
+                };
+                if !probe_active && !bucket.try_take(need) {
+                    break;
+                }
+                let m = q.msgs.pop_front().unwrap();
+                q.bytes = q.bytes.saturating_sub(m.payload.len());
+                m
+            };
             let chunk = encode_message(m.msg_type, m.timestamp, up_stream_id, &m.payload);
             if let Err(e) = write_all(&mut up_conn.stream, &chunk) {
-                return Err(format!("ارسال به ingest قطع شد: {e}"));
+                pump_res = Err(format!("ارسال به ingest قطع شد: {e}"));
+                break 'pump;
             }
             window_bytes += chunk.len() as u64;
             let mut st = stats.lock().unwrap();
@@ -1648,21 +1707,33 @@ fn run_pump(
         // اگر چیزی برای ارسال نیست و توکن هم نیست، کمی صبر کن تا
         // حلقه CPU را اشغال نکند. در پنجره‌ی پروب صبر نمی‌کنیم تا
         // drain واقعی سوکت سنجیده شود.
-        if queue.msgs.is_empty() {
+        let (is_empty, front_len) = {
+            let q = queue.lock().unwrap();
+            (q.msgs.is_empty(), q.msgs.front().map(|f| f.payload.len()))
+        };
+        if is_empty {
             std::thread::sleep(Duration::from_millis(5));
         } else if !probe_active {
-            if let Some(front) = queue.msgs.front() {
-                let wait = bucket.wait_ms(front.payload.len());
+            if let Some(len) = front_len {
+                let wait = bucket.wait_ms(len);
                 if wait > 0 {
                     std::thread::sleep(Duration::from_millis(wait.min(50)));
                 }
             }
         }
     }
-    // توقف تمیز: مرز سشن در لاگ می‌ماند تا نمونه‌های دو استریم
-    // جدا خوانده شوند. (در قطع با خطا، سطر شروع بعدی مرز است.)
+    // خطای پمپ هم خواننده را متوقف می‌کند؛ خواننده حداکثر تا
+    // timeout خواندن ۲۰۰ms بعد خارج می‌شود.
+    stop.store(true, Ordering::SeqCst);
+    let reader_res = reader_handle
+        .join()
+        .unwrap_or_else(|_| Err("نخ خواننده panicked".to_string()));
+    if pump_res.is_ok() {
+        pump_res = reader_res;
+    }
+    // سطر پایان سشن دقیقاً یک بار، بعد از پایان هر دو نخ.
     append_log_line(log_path, &format!("# session end unix={}", unix_now()));
-    Ok(())
+    pump_res
 }
 
 // ---------------------------------------------------------------- آزمون‌ها
@@ -1742,7 +1813,7 @@ mod tests {
         // تازه دقیقاً در پروب پنجم (۲۸۵۱) صعود می‌دهد و بعد روی
         // ۲۵۰۰ می‌ماند (آستانه‌ی ۴۰۰۰×۱٫۰۵=۴۲۰۰ دست‌نیافتنی است).
         let mut l = LadderController::new(8000);
-        l.idx = 4; // پله‌ی ۱۵۰۰
+        l.idx = 5; // پله‌ی ۱۵۰۰ (با پله‌ی ۵۰۰۰، اندیس‌ها یکی جابه‌جا شدند)
         assert_eq!(l.current_kbps(), 1500);
         assert_eq!(l.note_probe(2373.0), RelayDecision::Hold);
         assert_eq!(l.note_probe(2027.0), RelayDecision::Hold);
@@ -1832,6 +1903,50 @@ mod tests {
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
         q.enforce_age(now);
         assert_eq!(q.dropped_gops, 1);
+        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
+    fn ladder_has_5000_rung() {
+        // پله‌ی ۵۰۰۰ (۰٫۹٫۹): بین ۶۰۰۰ و ۴۰۰۰ می‌نشیند تا وقتی
+        // مسیر حول ۵۰۰۰ است، نردبان روی ۴۰۰۰ قفل نماند.
+        assert_eq!(
+            LadderController::new(8000).rungs,
+            vec![8000, 6000, 5000, 4000, 2500, 1500]
+        );
+    }
+
+    #[test]
+    fn queue_push_enforces_byte_cap() {
+        // سقف بایت روی push (۰٫۹٫۹): با پمپ متوقف، pushهای پیاپی
+        // نباید صف را از سقف رد کنند — قدیمی‌ترین GOP کامل می‌رود.
+        let mut q = OutQueue::new(1000);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 600], is_keyframe: true, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 200], is_keyframe: false, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 200], is_keyframe: false, enqueued_at: Instant::now() });
+        assert_eq!(q.bytes, 1000);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 600], is_keyframe: true, enqueued_at: Instant::now() });
+        assert_eq!(q.dropped_gops, 1);
+        assert_eq!(q.bytes, 600);
+        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
+    fn queue_push_enforces_age_with_stopped_pump() {
+        // سقف سن روی push (۰٫۹٫۹): خواننده بعد از هر push سقف سن را
+        // هم اعمال می‌کند، پس با پمپ متوقف هم صف با GOP کهنه پر
+        // نمی‌شود — حافظه حول سقف بایت + یک پیام می‌ماند.
+        let mut q = OutQueue::new(1_000_000);
+        let now = Instant::now();
+        let old = now - Duration::from_secs(10);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
+        q.enforce_age(now);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
+        q.enforce_age(now);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
+        q.enforce_age(now);
+        assert_eq!(q.dropped_gops, 1);
+        assert_eq!(q.msgs.len(), 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
     }
 
