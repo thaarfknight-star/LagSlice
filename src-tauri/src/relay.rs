@@ -893,20 +893,38 @@ impl RelayRuntime {
         let key = stream_key.to_string();
         let target = format!("rtmp://{host}:{port}/{app}");
         self.handle = Some(std::thread::spawn(move || {
-            let res = run_pump(
-                stop,
-                &stats,
-                &ladder,
-                &queue_bytes,
-                &queue_age,
-                &drain,
-                &last_probe,
-                &target,
-                &key,
-                &log_path,
-            );
-            if let Err(e) = res {
-                *last_error.lock().unwrap() = Some(e);
+            // مرگ خاموش ۰٫۹٫۹: اگر run_pump panic کند، unwind از
+            // پوشش می‌گذرد و running=false و last_error هرگز اجرا
+            // نمی‌شوند — پنل «در حال اجرا» گیر می‌کند و خطایی دیده
+            // نمی‌شود (دقیقاً همان چیزی که طه در سشن ۱۲ دقیقه‌ای
+            // دید). catch_unwind جلوی این را می‌گیرد: پیام panic
+            // در پنل می‌نشیند و رله قابل ری‌استارت می‌شود.
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_pump(
+                    stop,
+                    &stats,
+                    &ladder,
+                    &queue_bytes,
+                    &queue_age,
+                    &drain,
+                    &last_probe,
+                    &target,
+                    &key,
+                    &log_path,
+                )
+            }));
+            match res {
+                Ok(inner) => {
+                    if let Err(e) = inner {
+                        *last_error.lock().unwrap() = Some(e);
+                    }
+                }
+                Err(payload) => {
+                    *last_error.lock().unwrap() = Some(format!(
+                        "نخ رله ناگهان از کار افتاد: {}",
+                        panic_message(&payload)
+                    ));
+                }
             }
             running.store(false, Ordering::SeqCst);
         }));
@@ -998,6 +1016,33 @@ fn pick_log_path() -> std::path::PathBuf {
 /// می‌کنند — با «؛» و فاصله عوض می‌شوند.
 fn sanitize_log_field(s: &str) -> String {
     s.replace(',', "؛").replace(['\r', '\n'], " ")
+}
+
+/// سطر پایان سشن با نتیجه (۰٫۹٫۱۰): در ۰٫۹٫۹ سطر پایان بی‌قید بود و
+/// از روی لاگ نمی‌شد فهمید سشن با توقف تمیز تمام شده یا با خطا —
+/// مرگی که طه در سشن ۱۲ دقیقه‌ای ۰٫۹٫۹ دید دقیقاً همین‌طور بی‌صدا
+/// بود. از این به بعد نتیجه هم ثبت می‌شود.
+fn session_end_line(unix: u64, result: &Result<(), String>) -> String {
+    match result {
+        Ok(()) => format!("# session end unix={unix} result=ok"),
+        Err(e) => format!(
+            "# session end unix={unix} result=error: {}",
+            sanitize_log_field(e)
+        ),
+    }
+}
+
+/// استخراج پیام panic برای نمایش در پنل (۰٫۹٫۱۰): بدون این، مرگ
+/// نخ پمپ بی‌صدا می‌ماند (running گیرکرده، بدون خطا). پیام‌های
+/// رایج panic یا &str اند یا String؛ بقیه «نامشخص» می‌شوند.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "نامشخص".to_string()
+    }
 }
 
 /// یک سطر نمونه‌ی لاگ (بدون خط جدید انتهایی).
@@ -1731,8 +1776,9 @@ fn run_pump(
     if pump_res.is_ok() {
         pump_res = reader_res;
     }
-    // سطر پایان سشن دقیقاً یک بار، بعد از پایان هر دو نخ.
-    append_log_line(log_path, &format!("# session end unix={}", unix_now()));
+    // سطر پایان سشن دقیقاً یک بار، بعد از پایان هر دو نخ — با
+    // نتیجه، تا مرگ با خطا از توقف تمیز در لاگ جدا شود (۰٫۹٫۱۰).
+    append_log_line(log_path, &session_end_line(unix_now(), &pump_res));
     pump_res
 }
 
@@ -1948,6 +1994,30 @@ mod tests {
         assert_eq!(q.dropped_gops, 1);
         assert_eq!(q.msgs.len(), 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
+    fn session_end_line_records_outcome() {
+        // ۰٫۹٫۱۰: مرگ با خطا از توقف تمیز در لاگ جدا می‌شود.
+        assert_eq!(
+            session_end_line(1792879169, &Ok(())),
+            "# session end unix=1792879169 result=ok"
+        );
+        let err = session_end_line(
+            1792879169,
+            &Err("ارسال به ingest قطع شد: boom".to_string()),
+        );
+        assert!(err.contains("result=error"));
+        assert!(err.contains("ارسال به ingest قطع شد: boom"));
+    }
+
+    #[test]
+    fn panic_message_extracts_str_and_string() {
+        // پیام‌های رایج panic یا &str اند یا String.
+        let p1 = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
+        assert_eq!(panic_message(&p1), "boom");
+        let p2 = std::panic::catch_unwind(|| panic!("{}", "kaboom")).unwrap_err();
+        assert_eq!(panic_message(&p2), "kaboom");
     }
 
     #[test]

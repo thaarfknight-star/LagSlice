@@ -1,6 +1,6 @@
 [package]
 name = "lagslice"
-version = "0.9.9"
+version = "0.9.10"
 description = "LagSlice — مدیریت پهنای‌باند و رزرو آپلود برای گیم و استریم"
 edition = "2021"
 license = "MIT OR Apache-2.0"
