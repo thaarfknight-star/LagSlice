@@ -112,6 +112,17 @@ impl LadderController {
         RelayDecision::Hold
     }
 
+    /// فقط میانگین تخلیه را تازه می‌کند، بدون هیچ تصمیم پله‌ای
+    /// (۰٫۹٫۱۱): در حالت بیت‌ریت ثابت، نردبان منجمد است ولی پنل و
+    /// لاگ هنوز باید میانگین drain را نشان بدهند.
+    pub fn note_drain_only(&mut self, drain_kbps: f64) {
+        if self.capacity_ema_kbps <= 0.0 {
+            self.capacity_ema_kbps = drain_kbps;
+        } else {
+            self.capacity_ema_kbps = 0.4 * drain_kbps + 0.6 * self.capacity_ema_kbps;
+        }
+    }
+
     /// نمونه‌ی پنجره‌ی پروب (ارسال بدون سقف سطل توکن). فقط همین نمونه
     /// برای بالارفتن معتبر است، چون drain در آن واقعاً ظرفیت سوکت را
     /// نشان می‌دهد، نه سقف مصنوعی. بالارفتن (قانون ۰٫۹٫۸): از ۳ پروب
@@ -322,17 +333,19 @@ impl OutQueue {
         }
     }
 
-    /// سقف سن صف: GOPهایی که از رسیدنشان بیش از MAX_QUEUE_AGE گذشته
+    /// سقف سن صف: GOPهایی که از رسیدنشان بیش از سقف گذشته
     /// دور انداخته می‌شوند تا تأخیر عبوری از رله — هرچقدر هم تخلیه‌ی
     /// واقعی تا ingest کند باشد — از سقف رد نشود. اولویت با فریم تازه
     /// و کی‌فریم تازه است، نه ارسال مدیای کهنه. مثل سقف بایت،
     /// تک‌پیام تنها رها می‌شود تا صف هیچ‌وقت کاملاً خالی نشود.
-    pub fn enforce_age(&mut self, now: Instant) {
+    /// سقف پارامتر است چون حالت‌ها سقف متفاوت دارند (بدون تأخیر:
+    /// MAX_QUEUE_AGE؛ ثابت: FIXED_QUEUE_AGE).
+    pub fn enforce_age(&mut self, now: Instant, cap: Duration) {
         while self.msgs.len() > 1 {
             let Some(front) = self.msgs.front() else {
                 break;
             };
-            if now.duration_since(front.enqueued_at) <= MAX_QUEUE_AGE {
+            if now.duration_since(front.enqueued_at) <= cap {
                 break;
             }
             if self.drop_front_gop() == 0 {
@@ -750,6 +763,9 @@ pub struct RelaySnapshot {
     pub target_host: String,
     pub listen_addr: String,
     pub current_kbps: u32,
+    /// حالت بیت‌ریت ثابت فعال است؟ (۰٫۹٫۱۱) — پنل از روی همین،
+    /// انتخاب‌گر حالت را با وضعیت واقعی هم‌گام می‌کند.
+    pub fixed_mode: bool,
     pub capacity_ema_kbps: f64,
     /// آخرین drain پنجره‌ی پروب (Kbps)؛ صفر یعنی هنوز پروبی نشده.
     /// توجه: capacity_ema میانگین drain پنجره‌های عادی (سقف‌دار) است و
@@ -789,6 +805,15 @@ pub struct RelayRuntime {
     queue_age: Arc<Mutex<f64>>,
     drain: Arc<Mutex<f64>>,
     last_probe: Arc<Mutex<f64>>,
+    /// حالت بیت‌ریت ثابت (۰٫۹٫۱۱): false یعنی «بدون تأخیر» (نردبان
+    /// تطبیقی)، true یعنی «بیت‌ریت ثابت» (خط تأخیر ۲٫۵ ثانیه‌ای).
+    /// با AtomicBool است تا پمپ هر تکرار بدون قفل بخواندش و تغییر
+    /// حالت وسط استریم هم همان لحظه اثر کند (بدون ری‌استارت رله).
+    fixed_mode: Arc<AtomicBool>,
+    /// نرخ ورودی Meld (Kbps، میانگین نمایی) — در حالت ثابت، عدد
+    /// «بیت‌ریت خروجی فعلی» پنل و لاگ همین است، نه پله‌ی نردبان
+    /// منجمد.
+    input_kbps: Arc<Mutex<f64>>,
     target_host: Arc<Mutex<String>>,
     last_error: Arc<Mutex<Option<String>>>,
     log_path: Arc<Mutex<String>>,
@@ -813,6 +838,8 @@ impl RelayRuntime {
             queue_age: Arc::new(Mutex::new(0.0)),
             drain: Arc::new(Mutex::new(0.0)),
             last_probe: Arc::new(Mutex::new(0.0)),
+            fixed_mode: Arc::new(AtomicBool::new(false)),
+            input_kbps: Arc::new(Mutex::new(0.0)),
             target_host: Arc::new(Mutex::new(String::new())),
             last_error: Arc::new(Mutex::new(None)),
             log_path: Arc::new(Mutex::new(String::new())),
@@ -888,6 +915,8 @@ impl RelayRuntime {
         let queue_age = self.queue_age.clone();
         let drain = self.drain.clone();
         let last_probe = self.last_probe.clone();
+        let fixed_mode = self.fixed_mode.clone();
+        let input_kbps = self.input_kbps.clone();
         let last_error = self.last_error.clone();
         let running = self.running.clone();
         let key = stream_key.to_string();
@@ -908,6 +937,8 @@ impl RelayRuntime {
                     &queue_age,
                     &drain,
                     &last_probe,
+                    fixed_mode,
+                    input_kbps,
                     &target,
                     &key,
                     &log_path,
@@ -939,6 +970,12 @@ impl RelayRuntime {
         self.running.store(false, Ordering::SeqCst);
     }
 
+    /// تغییر حالت رله از پنل (۰٫۹٫۱۱): وسط استریم هم اثر می‌کند،
+    /// چون پمپ هر تکرار پرچم را می‌خواند.
+    pub fn set_fixed_mode(&self, fixed: bool) {
+        self.fixed_mode.store(fixed, Ordering::SeqCst);
+    }
+
     pub fn snapshot(&self) -> RelaySnapshot {
         let st = self.stats.lock().unwrap();
         let lad = self.ladder.lock().unwrap();
@@ -948,11 +985,19 @@ impl RelayRuntime {
             .unwrap()
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
+        let fixed = self.fixed_mode.load(Ordering::SeqCst);
         RelaySnapshot {
             running: self.is_running(),
             target_host: self.target_host.lock().unwrap().clone(),
             listen_addr: "127.0.0.1:1935/live".to_string(),
-            current_kbps: lad.current_kbps(),
+            // در حالت ثابت، عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده
+            // است، نه پله‌ی نردبان منجمد.
+            current_kbps: if fixed {
+                *self.input_kbps.lock().unwrap() as u32
+            } else {
+                lad.current_kbps()
+            },
+            fixed_mode: fixed,
             capacity_ema_kbps: lad.capacity_ema_kbps,
             probe_kbps: *self.last_probe.lock().unwrap(),
             at_top: lad.at_top(),
@@ -982,6 +1027,16 @@ const MAX_QUEUE_BYTES: usize = 2_000_000;
 /// نمی‌شود، مستقل از اینکه تخلیه‌ی واقعی چقدر کند باشد. سهم ثابت
 /// MasterStream از تأخیر پایه جداست و با این سقف کم نمی‌شود.
 const MAX_QUEUE_AGE: Duration = Duration::from_secs(4);
+/// خط تأخیر حالت بیت‌ریت ثابت (۰٫۹٫۱۱): پیام فقط وقتی فرستاده
+/// می‌شود که دست‌کم این‌قدر عمر کرده باشد — تأخیر خروجی حول
+/// ۲٫۵ ثانیه می‌ایستد و نرخ خروجی با نرخ ورودی برابر می‌ماند.
+/// خط تأخیر خودش آهنگ را تنظیم می‌کند، پس در این حالت نه سطل
+/// توکن لازم است نه نردبان.
+const FIXED_DELAY: Duration = Duration::from_millis(2500);
+/// سقف سن صف در حالت ثابت: ۵ ثانیه — ۲٫۵ ثانیه فضای خالی بالای
+/// خط تأخیر برای جذب افت‌های مسیر، بدون اینکه تأخیر از کنترل
+/// خارج شود.
+const FIXED_QUEUE_AGE: Duration = Duration::from_secs(5);
 const WINDOW_SECS: f64 = 2.0;
 
 // ------------------------------------------------------------- لاگ رله
@@ -1364,6 +1419,17 @@ fn wait_command_any(
 }
 
 /// حلقه‌ی اصلی پمپ: Meld ←→ ingest مقصد (در عمل MasterStream).
+/// در حالت ثابت، جلوی صف باید به سن خط تأخیر برسد تا فرستاده
+/// شود؛ وگرنه تا رسیدنش (حداکثر ۵۰ms در هر تکرار، تا حلقه قفل
+/// نشود) صبر می‌کنیم. None یعنی قابل ارسال است.
+fn fixed_send_wait(age: Duration) -> Option<Duration> {
+    if age < FIXED_DELAY {
+        Some(std::cmp::min(FIXED_DELAY - age, Duration::from_millis(50)))
+    } else {
+        None
+    }
+}
+
 /// نگهبان: با خروج از run_pump به هر دلیل (عادی، خطا، panic)،
 /// پرچم توقف را می‌زند تا نخ خواننده یتیم نماند و تا timeout
 /// خواندن ۲۰۰ms بعد خودش خارج شود.
@@ -1386,12 +1452,32 @@ fn run_reader(
     mut meld_conn: ChunkConn,
     queue: &Mutex<OutQueue>,
     stop: &AtomicBool,
+    fixed_mode: &AtomicBool,
+    input_kbps: &Mutex<f64>,
 ) -> Result<(), String> {
+    // نرخ ورودی Meld برای نمایش در حالت ثابت (پنجره‌ی ۱ ثانیه‌ای +
+    // میانگین نمایی آلفا ۰٫۴) — فقط نمایش است، آهنگ ارسال در حالت
+    // ثابت با خط تأخیر تنظیم می‌شود، نه با این عدد.
+    let mut rate_start = Instant::now();
+    let mut rate_bytes: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
         match meld_conn.read_message() {
             Ok(Some((h, body))) => match h.msg_type {
                 8 | 9 | 18 => {
                     let is_kf = h.msg_type == 9 && is_keyframe_tag(&body);
+                    rate_bytes += body.len() as u64;
+                    if rate_start.elapsed().as_secs_f64() >= 1.0 {
+                        let elapsed = rate_start.elapsed().as_secs_f64().max(0.1);
+                        let rate = rate_bytes as f64 * 8.0 / 1000.0 / elapsed;
+                        let mut cur = input_kbps.lock().unwrap();
+                        if *cur <= 0.0 {
+                            *cur = rate;
+                        } else {
+                            *cur = 0.4 * rate + 0.6 * *cur;
+                        }
+                        rate_bytes = 0;
+                        rate_start = Instant::now();
+                    }
                     let mut q = queue.lock().unwrap();
                     q.push(QueuedMsg {
                         msg_type: h.msg_type,
@@ -1400,7 +1486,13 @@ fn run_reader(
                         is_keyframe: is_kf,
                         enqueued_at: Instant::now(),
                     });
-                    q.enforce_age(Instant::now());
+                    // سقف سن حالت‌مند: ثابت ۵ ثانیه، بدون تأخیر ۴ ثانیه.
+                    let cap = if fixed_mode.load(Ordering::SeqCst) {
+                        FIXED_QUEUE_AGE
+                    } else {
+                        MAX_QUEUE_AGE
+                    };
+                    q.enforce_age(Instant::now(), cap);
                 }
                 _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
             },
@@ -1422,6 +1514,8 @@ fn run_pump(
     queue_age: &Mutex<f64>,
     drain: &Mutex<f64>,
     last_probe: &Mutex<f64>,
+    fixed_mode: Arc<AtomicBool>,
+    input_kbps: Arc<Mutex<f64>>,
     target_url: &str,
     stream_key: &str,
     log_path: &std::path::Path,
@@ -1630,14 +1724,32 @@ fn run_pump(
     let reader_handle = {
         let reader_queue = queue.clone();
         let reader_stop = stop.clone();
-        std::thread::spawn(move || run_reader(meld_conn, &reader_queue, &reader_stop))
+        let reader_fixed = fixed_mode.clone();
+        let reader_input = input_kbps.clone();
+        std::thread::spawn(move || {
+            run_reader(
+                meld_conn,
+                &reader_queue,
+                &reader_stop,
+                &reader_fixed,
+                &reader_input,
+            )
+        })
     };
     'pump: while !stop.load(Ordering::SeqCst) {
+        // حالت هر تکرار خوانده می‌شود تا تغییر وسط استریم همان
+        // لحظه اثر کند (بدون ری‌استارت رله).
+        let fixed = fixed_mode.load(Ordering::SeqCst);
+        let age_cap = if fixed {
+            FIXED_QUEUE_AGE
+        } else {
+            MAX_QUEUE_AGE
+        };
         // سقف سن صف روی pop هم — GOPای که موقع بلاک‌شدن write
         // کهنه شده باشد نباید به‌عنوان مدیای تازه فرستاده شود.
         let (q_bytes, q_age, d_gops, d_bytes) = {
             let mut q = queue.lock().unwrap();
-            q.enforce_age(Instant::now());
+            q.enforce_age(Instant::now(), age_cap);
             (
                 q.bytes,
                 q.msgs
@@ -1660,9 +1772,18 @@ fn run_pump(
         // Mutexهایی که فرانت می‌خواند — پس لاگ و پنل یکی‌اند.
         if last_log.elapsed() >= RELAY_LOG_INTERVAL {
             last_log = Instant::now();
+            // در حالت ثابت، عدد خروجی همان نرخ ورودی است، نه پله‌ی
+            // نردبان منجمد.
             let (cur, ema) = {
                 let lad = ladder.lock().unwrap();
-                (lad.current_kbps(), lad.capacity_ema_kbps)
+                (
+                    if fixed {
+                        *input_kbps.lock().unwrap() as u32
+                    } else {
+                        lad.current_kbps()
+                    },
+                    lad.capacity_ema_kbps,
+                )
             };
             let st = stats.lock().unwrap();
             let line = format_log_sample(
@@ -1682,16 +1803,48 @@ fn run_pump(
             );
             append_log_line(log_path, &line);
         }
+        // حالت ثابت: جلوی صف باید به سن خط تأخیر برسد تا فرستاده
+        // شود؛ وگرنه تا رسیدنش صبر می‌کنیم (بیرون از قفل، تا
+        // خواننده گیر نکند) و این تکرار را بدون ارسال تمام می‌کنیم.
+        // در این حالت سطل توکن کنار گذاشته می‌شود — خط تأخیر خودش
+        // آهنگ را تنظیم می‌کند.
+        if fixed {
+            let wait = {
+                let q = queue.lock().unwrap();
+                q.msgs.front().and_then(|f| {
+                    fixed_send_wait(Instant::now().duration_since(f.enqueued_at))
+                })
+            };
+            if let Some(d) = wait {
+                std::thread::sleep(d);
+            }
+        }
         // ارسال: در پنجره‌ی پروب بدون سقف، وگرنه تا جایی که توکن هست.
         // قانون طلایی: قفل صف هرگز روی write نگه داشته نمی‌شود —
         // اول pop زیر قفل، بعد unlock، بعد encode + write.
         loop {
+            if fixed {
+                // اگر جلوی صف هنوز جوان است، این تکرار چیزی
+                // نمی‌فرستد (صبرش بالاتر انجام شد).
+                let young = {
+                    let q = queue.lock().unwrap();
+                    q.msgs
+                        .front()
+                        .map(|f| {
+                            Instant::now().duration_since(f.enqueued_at) < FIXED_DELAY
+                        })
+                        .unwrap_or(false)
+                };
+                if young {
+                    break;
+                }
+            }
             let m = {
                 let mut q = queue.lock().unwrap();
                 let Some(need) = q.msgs.front().map(|f| f.payload.len()) else {
                     break;
                 };
-                if !probe_active && !bucket.try_take(need) {
+                if !fixed && !probe_active && !bucket.try_take(need) {
                     break;
                 }
                 let m = q.msgs.pop_front().unwrap();
@@ -1723,7 +1876,11 @@ fn run_pump(
             window_start = Instant::now();
             window_index += 1;
             let mut lad = ladder.lock().unwrap();
-            if probe_active {
+            if fixed {
+                // نردبان منجمد است؛ فقط میانگین تخلیه تازه می‌شود
+                // تا پنل و لاگ عدد معنادار نشان بدهند.
+                lad.note_drain_only(drain_kbps);
+            } else if probe_active {
                 probe_active = false;
                 *last_probe.lock().unwrap() = drain_kbps;
                 let before = lad.current_kbps();
@@ -1947,7 +2104,7 @@ mod tests {
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now);
+        q.enforce_age(now, MAX_QUEUE_AGE);
         assert_eq!(q.dropped_gops, 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
     }
@@ -1986,11 +2143,11 @@ mod tests {
         let now = Instant::now();
         let old = now - Duration::from_secs(10);
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
-        q.enforce_age(now);
+        q.enforce_age(now, MAX_QUEUE_AGE);
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
-        q.enforce_age(now);
+        q.enforce_age(now, MAX_QUEUE_AGE);
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now);
+        q.enforce_age(now, MAX_QUEUE_AGE);
         assert_eq!(q.dropped_gops, 1);
         assert_eq!(q.msgs.len(), 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
@@ -2021,13 +2178,60 @@ mod tests {
     }
 
     #[test]
+    fn fixed_send_wait_holds_until_delay_line() {
+        // ۰٫۹٫۱۱: پیام جوان‌تر از ۲٫۵ ثانیه صبر می‌کند (حداکثر
+        // ۵۰ms در هر تکرار) و پیام به‌سن‌رسیده بی‌درنگ می‌رود.
+        assert_eq!(
+            fixed_send_wait(Duration::from_secs(0)),
+            Some(Duration::from_millis(50))
+        );
+        assert_eq!(
+            fixed_send_wait(Duration::from_millis(2480)),
+            Some(Duration::from_millis(20))
+        );
+        assert_eq!(fixed_send_wait(Duration::from_millis(2500)), None);
+        assert_eq!(fixed_send_wait(Duration::from_secs(3)), None);
+    }
+
+    #[test]
+    fn note_drain_only_moves_ema_without_steps() {
+        // ۰٫۹٫۱۱: در حالت ثابت، میانگین تخلیه تازه می‌شود ولی
+        // پله تکان نمی‌خورد.
+        let mut l = LadderController::new(8000);
+        l.note_drain_only(4000.0);
+        assert_eq!(l.capacity_ema_kbps, 4000.0);
+        assert_eq!(l.current_kbps(), 8000);
+        l.note_drain_only(2000.0);
+        assert_eq!(l.capacity_ema_kbps, 0.4 * 2000.0 + 0.6 * 4000.0);
+        assert_eq!(l.current_kbps(), 8000);
+    }
+
+    #[test]
+    fn queue_age_cap_is_mode_dependent() {
+        // ۰٫۹٫۱۱: GOP با عمر ۴٫۵ ثانیه زیر سقف ۴ ثانیه‌ای (بدون
+        // تأخیر) می‌رود ولی زیر سقف ۵ ثانیه‌ای (ثابت) می‌ماند.
+        let now = Instant::now();
+        let old = now - Duration::from_millis(4500);
+        let mut q = OutQueue::new(1_000_000);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
+        q.enforce_age(now, FIXED_QUEUE_AGE);
+        assert_eq!(q.dropped_gops, 0);
+        assert_eq!(q.msgs.len(), 3);
+        q.enforce_age(now, MAX_QUEUE_AGE);
+        assert_eq!(q.dropped_gops, 1);
+        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
     fn queue_age_cap_keeps_single_stale_message() {
         // حالت مرزی مثل سقف بایت: تک‌پیام تنها رها می‌شود تا صف
         // هیچ‌وقت کاملاً خالی نشود.
         let mut q = OutQueue::new(1_000_000);
         let now = Instant::now();
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_secs(60) });
-        q.enforce_age(now);
+        q.enforce_age(now, MAX_QUEUE_AGE);
         assert_eq!(q.dropped_gops, 0);
         assert_eq!(q.msgs.len(), 1);
     }

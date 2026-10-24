@@ -84,6 +84,9 @@ const STRINGS = {
     relay_key_note: "کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.",
     relay_start: "▶ شروع رله",
     relay_stop: "⏹ توقف رله",
+    relay_mode_label: "حالت رله:",
+    relay_mode_zero: "بدون تأخیر",
+    relay_mode_fixed: "بیت‌ریت ثابت (۲–۳ ثانیه تأخیر)",
     relay_status_title: "📊 وضعیت زنده",
     relay_state_label: "وضعیت:",
     relay_host_label: "مقصد:",
@@ -248,6 +251,9 @@ const STRINGS = {
     relay_key_note: "The key stays on this machine only (app memory + the embedded browser's local storage); it is never sent anywhere and never logged.",
     relay_start: "▶ Start relay",
     relay_stop: "⏹ Stop relay",
+    relay_mode_label: "Relay mode:",
+    relay_mode_zero: "Zero delay",
+    relay_mode_fixed: "Fixed bitrate (2–3s delay)",
     relay_status_title: "📊 Live status",
     relay_state_label: "Status:",
     relay_host_label: "Target:",
@@ -605,8 +611,29 @@ document.getElementById("navSettings").addEventListener("click", () => showView(
 
 // ---------- رله‌ی تطبیقی: شروع/توقف + وضعیت زنده (پولینگ ۲ ثانیه‌ای) ----------
 const RELAY_TARGET_KEY = "lagslice.relayTarget";
+const RELAY_MODE_KEY = "lagslice.relayMode";
 let relayTimer = null;
 let relayRunning = false;
+
+// حالت رله (۰٫۹٫۱۱): انتخاب‌گر پنل، با حافظه‌ی محلی می‌ماند؛
+// بک‌اند با همین مقدار هم‌گام می‌شود (پیش از استارت و با هر
+// تغییر وسط استریم — پمپ هر تکرار پرچم را می‌خواند).
+function relayModeFixed() {
+  return document.getElementById("relayMode").value === "fixed";
+}
+
+async function applyRelayMode() {
+  try {
+    await invoke("relay_set_mode", { fixed: relayModeFixed() });
+  } catch {}
+}
+
+function loadRelayMode() {
+  try {
+    const m = localStorage.getItem(RELAY_MODE_KEY);
+    if (m === "fixed" || m === "zero") document.getElementById("relayMode").value = m;
+  } catch {}
+}
 
 function loadRelayTarget() {
   try {
@@ -627,6 +654,12 @@ function renderRelayStatus(s) {
   document.getElementById("relayState").textContent = s.running
     ? t("relay_running")
     : t("relay_stopped");
+  // هم‌گام‌سازی انتخاب‌گر حالت با وضعیت واقعی — فقط وقتی در حال
+  // اجراست، تا انتخابِ پیش از استارت با مقدار پیش‌فرض بک‌اند
+  // (بدون تأخیر) بازنویسی نشود.
+  if (s.running) {
+    document.getElementById("relayMode").value = s.fixed_mode ? "fixed" : "zero";
+  }
   // هاست واقعی مقصد (از آدرس واردشده) — برچسب همیشه درست است،
   // چه مقصد MasterStream باشد چه هر سرویس RTMP دیگر.
   const hostEl = document.getElementById("relayTargetHost");
@@ -675,6 +708,13 @@ async function pollRelayStatus() {
   }
 }
 
+document.getElementById("relayMode").addEventListener("change", async () => {
+  try {
+    localStorage.setItem(RELAY_MODE_KEY, document.getElementById("relayMode").value);
+  } catch {}
+  await applyRelayMode();
+});
+
 document.getElementById("relayStart").addEventListener("click", async () => {
   const url = document.getElementById("relayTarget").value.trim();
   const key = document.getElementById("relayKey").value;
@@ -688,6 +728,7 @@ document.getElementById("relayStart").addEventListener("click", async () => {
     return;
   }
   const topKbps = Math.round((isNaN(topMbps) ? 8 : topMbps) * 1000);
+  await applyRelayMode();
   try {
     await invoke("relay_start", { targetUrl: url, streamKey: key, topKbps });
     try {
@@ -719,6 +760,7 @@ document.getElementById("relayStop").addEventListener("click", async () => {
 });
 
 loadRelayTarget();
+loadRelayMode();
 pollRelayStatus();
 
 // ---------- زبان و تم ----------

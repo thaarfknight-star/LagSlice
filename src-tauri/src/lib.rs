@@ -38,6 +38,8 @@ struct RelayStatusRow {
     target_host: String,
     listen_addr: String,
     current_kbps: u32,
+    /// حالت بیت‌ریت ثابت فعال است؟ (۰٫۹٫۱۱)
+    fixed_mode: bool,
     capacity_ema_kbps: f64,
     probe_kbps: f64,
     at_top: bool,
@@ -72,6 +74,15 @@ fn relay_stop(state: tauri::State<AppState>) {
     state.relay.lock().unwrap().stop();
 }
 
+/// تغییر حالت رله از پنل (۰٫۹٫۱۱): وسط استریم هم اثر می‌کند،
+/// چون پمپ هر تکرار پرچم را می‌خواند؛ فرانت قبل از استارت هم
+/// همین را با مقدار انتخاب‌گر صدا می‌زند تا پرچم با انتخاب‌گر
+/// هم‌گام شود.
+#[tauri::command]
+fn relay_set_mode(state: tauri::State<AppState>, fixed: bool) {
+    state.relay.lock().unwrap().set_fixed_mode(fixed);
+}
+
 /// وضعیت زنده‌ی رله برای پنل فرانت.
 #[tauri::command]
 fn relay_status(state: tauri::State<AppState>) -> RelayStatusRow {
@@ -81,6 +92,7 @@ fn relay_status(state: tauri::State<AppState>) -> RelayStatusRow {
         target_host: s.target_host,
         listen_addr: s.listen_addr,
         current_kbps: s.current_kbps,
+        fixed_mode: s.fixed_mode,
         capacity_ema_kbps: s.capacity_ema_kbps,
         probe_kbps: s.probe_kbps,
         at_top: s.at_top,
@@ -789,6 +801,7 @@ pub fn run() {
             set_close_to_tray,
             relay_start,
             relay_stop,
+            relay_set_mode,
             relay_status,
             updater::check_update2,
             updater::download_update2,

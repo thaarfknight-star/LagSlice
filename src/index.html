@@ -169,6 +169,14 @@
       </div>
       <p class="hint" data-i18n="relay_key_note">کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.</p>
       <div class="row">
+        <label class="grow"><span data-i18n="relay_mode_label">حالت رله:</span>
+          <select id="relayMode">
+            <option value="zero" data-i18n="relay_mode_zero">بدون تأخیر</option>
+            <option value="fixed" data-i18n="relay_mode_fixed">بیت‌ریت ثابت (۲–۳ ثانیه تأخیر)</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
         <button id="relayStart" class="primary" data-i18n="relay_start">▶ شروع رله</button>
         <button id="relayStop" data-i18n="relay_stop">⏹ توقف رله</button>
       </div>
