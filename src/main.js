@@ -636,6 +636,15 @@ function renderRelayStatus(s) {
     ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB"
     : "—";
   document.getElementById("relayError").textContent = s.last_error || "";
+  if (!s.running) {
+    // بنر «رله شروع شد» مال لحظه‌ی استارت است؛ وقتی نخ رله تمام شد
+    // (مثلاً هندشیک شکست خورد) نباید باقی بماند — وضعیت یکدست
+    // «متوقف + علت» است و علت در relayError دیده می‌شود. running از
+    // لحظه‌ی استارت true است، پس این شرط فاز انتظار برای Meld را
+    // پاک نمی‌کند.
+    const m = document.getElementById("relayMsg");
+    if (m.textContent === t("relay_started")) m.textContent = "";
+  }
   document.getElementById("relayStart").disabled = !!s.running;
   document.getElementById("relayStop").disabled = !s.running;
 }

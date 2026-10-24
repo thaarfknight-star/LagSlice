@@ -1190,6 +1190,14 @@ fn run_pump(
             Err(e) => return Err(format!("خطا در accept: {e}")),
         }
     };
+    // نکته‌ی ویندوز (باگ ۰٫۹٫۴): سوکت پذیرفته‌شده از لیسنر
+    // non-blocking، حالت non-blocking را به ارث می‌برد؛ روی ویندوز
+    // set_read_timeout روی سوکت non-blocking بی‌اثر است و اولین read
+    // هندشیک WouldBlock (10035) برمی‌گرداند، به‌جای اینکه تا timeout
+    // صبر کند. پس اول blocking می‌کنیم، بعد timeoutها.
+    meld_stream
+        .set_nonblocking(false)
+        .map_err(|e| e.to_string())?;
     // فاز هندشیک: خواندن ۵ ثانیه (لوکال است ولی زمان‌بندی پردازه
     // تضمین‌شده نیست)؛ بعد از publish به ۲۰۰ms برمی‌گردیم تا حلقه به
     // پرچم توقف سریع واکنش بدهد. نوشتن از اول ۵ ثانیه سقف دارد تا
