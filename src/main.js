@@ -91,6 +91,7 @@ const STRINGS = {
     relay_cap_label: "میانگین نرخ تخلیه:",
     relay_probe_label: "نتیجه‌ی آخرین پروب:",
     relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف / سن صف / تخلیه:",
+    relay_log_label: "فایل لاگ (هر ۵ ثانیه یک نمونه؛ برای فرستادن به پشتیبانی):",
     relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم برگردان. رله کاملاً اختیاری است و بدون آن هم LagSlice مثل قبل کار می‌کند.",
     guide_title: "📖 راهنمای LagSlice",
     relay_running: "در حال اجرا ✅",
@@ -254,6 +255,7 @@ const STRINGS = {
     relay_cap_label: "Avg drain rate:",
     relay_probe_label: "Last probe result:",
     relay_stats_label: "Sent / GOPs dropped / queue / queue age / drain:",
+    relay_log_label: "Log file (one sample every 5s; send it for analysis):",
     relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct output. The relay is fully optional — LagSlice works as before without it.",
     guide_title: "📖 LagSlice guide",
     relay_running: "Running ✅",
@@ -641,6 +643,10 @@ function renderRelayStatus(s) {
   document.getElementById("relayStats").textContent = s.running
     ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB / " + s.queue_age_secs.toFixed(1) + "s / " + Math.round(s.drain_kbps) + " Kbps"
     : "—";
+  // مسیر فایل لاگ — از لحظه‌ی استارت مشخص است تا کاربر بداند
+  // فایل را از کجا بردارد و بفرستد؛ با توقف رله پاک نمی‌شود.
+  const logEl = document.getElementById("relayLogPath");
+  if (logEl) logEl.textContent = s.log_path || "—";
   document.getElementById("relayError").textContent = s.last_error || "";
   if (!s.running) {
     // بنر «رله شروع شد» مال لحظه‌ی استارت است؛ وقتی نخ رله تمام شد

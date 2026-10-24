@@ -751,6 +751,8 @@ pub struct RelaySnapshot {
     pub drain_kbps: f64,
     pub uptime_secs: u64,
     pub last_error: Option<String>,
+    /// مسیر کامل فایل لاگ ("" یعنی لاگ انتخاب نشده است).
+    pub log_path: String,
 }
 
 pub struct RelayStats {
@@ -773,6 +775,7 @@ pub struct RelayRuntime {
     last_probe: Arc<Mutex<f64>>,
     target_host: Arc<Mutex<String>>,
     last_error: Arc<Mutex<Option<String>>>,
+    log_path: Arc<Mutex<String>>,
     started_at: Arc<Mutex<Option<Instant>>>,
     running: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -796,6 +799,7 @@ impl RelayRuntime {
             last_probe: Arc::new(Mutex::new(0.0)),
             target_host: Arc::new(Mutex::new(String::new())),
             last_error: Arc::new(Mutex::new(None)),
+            log_path: Arc::new(Mutex::new(String::new())),
             started_at: Arc::new(Mutex::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             handle: None,
@@ -856,6 +860,10 @@ impl RelayRuntime {
         self.stop.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
         *self.started_at.lock().unwrap() = Some(Instant::now());
+        // مسیر لاگ از همین‌جا مشخص است تا پنل از لحظه‌ی استارت آن را
+        // نشان بدهد، حتی پیش از اینکه اولین نمونه نوشته شود.
+        let log_path = pick_log_path();
+        *self.log_path.lock().unwrap() = log_path.to_string_lossy().into_owned();
 
         let stop = self.stop.clone();
         let stats = self.stats.clone();
@@ -879,6 +887,7 @@ impl RelayRuntime {
                 &last_probe,
                 &target,
                 &key,
+                &log_path,
             );
             if let Err(e) = res {
                 *last_error.lock().unwrap() = Some(e);
@@ -922,6 +931,7 @@ impl RelayRuntime {
             drain_kbps: *self.drain.lock().unwrap(),
             uptime_secs: uptime,
             last_error: self.last_error.lock().unwrap().clone(),
+            log_path: self.log_path.lock().unwrap().clone(),
         }
     }
 }
@@ -939,6 +949,83 @@ const MAX_QUEUE_BYTES: usize = 2_000_000;
 /// MasterStream از تأخیر پایه جداست و با این سقف کم نمی‌شود.
 const MAX_QUEUE_AGE: Duration = Duration::from_secs(4);
 const WINDOW_SECS: f64 = 2.0;
+
+// ------------------------------------------------------------- لاگ رله
+/// لاگ رله (۰٫۹٫۷): هر ۵ ثانیه یک سطر CSV از همان عددهایی که پنل
+/// نشان می‌دهد، تا کاربر بتواند فایل را برای تحلیل بفرستد — مخصوصاً
+/// وقتی تأخیر ویور تا دقیقه می‌رسد ولی سن صف زیر سقف است: آن‌وقت
+/// رشد، بیرون از رله است (سمت Meld یا مسیر MasterStream تا Kick).
+/// نوشتن لاگ هرگز رله را خراب نمی‌کند: هر خطا ساکت نادیده گرفته
+/// می‌شود و فایل با open-append-close در هر نمونه نوشته می‌شود تا
+/// حتی با کرش برنامه، نمونه‌های قبلی روی دیسک مانده باشند.
+const RELAY_LOG_FILE: &str = "LagSlice-relay-log.csv";
+const RELAY_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const RELAY_LOG_HEADER: &str = "unix_s,uptime_s,current_kbps,capacity_ema_kbps,probe_kbps,queue_bytes,queue_age_s,drain_kbps,forwarded_bytes,forwarded_msgs,dropped_gops,dropped_bytes,last_error";
+
+/// مسیر لاگ: اول دسکتاپ، بعد Documents، وگرنه پوشه‌ی موقت سیستم.
+/// فقط پوشه‌ای انتخاب می‌شود که واقعاً وجود داشته باشد؛ مسیر نهایی
+/// در snapshot برمی‌گردد و پنل آن را نشان می‌دهد تا کاربر فایل را
+/// پیدا کند. کلید استریم هرگز در لاگ نیست.
+fn pick_log_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        for sub in ["Desktop", "Documents"] {
+            let dir = std::path::Path::new(&home).join(sub);
+            if dir.is_dir() {
+                return dir.join(RELAY_LOG_FILE);
+            }
+        }
+    }
+    std::env::temp_dir().join(RELAY_LOG_FILE)
+}
+
+/// پاک‌سازی یک ستون CSV: ویرگول و خط جدید، ساختار سطر را خراب
+/// می‌کنند — با «؛» و فاصله عوض می‌شوند.
+fn sanitize_log_field(s: &str) -> String {
+    s.replace(',', "؛").replace(['\r', '\n'], " ")
+}
+
+/// یک سطر نمونه‌ی لاگ (بدون خط جدید انتهایی).
+#[allow(clippy::too_many_arguments)]
+fn format_log_sample(
+    unix_s: u64,
+    uptime_s: u64,
+    current_kbps: u32,
+    capacity_ema_kbps: f64,
+    probe_kbps: f64,
+    queue_bytes: usize,
+    queue_age_s: f64,
+    drain_kbps: f64,
+    forwarded_bytes: u64,
+    forwarded_msgs: u64,
+    dropped_gops: u64,
+    dropped_bytes: u64,
+    last_error: &str,
+) -> String {
+    format!(
+        "{unix_s},{uptime_s},{current_kbps},{:.0},{:.0},{queue_bytes},{queue_age_s:.1},{drain_kbps:.0},{forwarded_bytes},{forwarded_msgs},{dropped_gops},{dropped_bytes},{}",
+        capacity_ema_kbps, probe_kbps, sanitize_log_field(last_error)
+    )
+}
+
+/// افزودن یک خط به لاگ: اگر فایل خالی باشد اول سطر سرستون نوشته
+/// می‌شود. هر خطایی ساکت رد می‌شود — لاگ، رله را متوقف نمی‌کند.
+fn append_log_line(path: &std::path::Path, line: &str) {
+    use std::io::Write;
+    let need_header = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if need_header {
+            let _ = writeln!(f, "{RELAY_LOG_HEADER}");
+        }
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 struct ChunkConn {
     stream: TcpStream,
@@ -1226,6 +1313,7 @@ fn run_pump(
     last_probe: &Mutex<f64>,
     target_url: &str,
     stream_key: &str,
+    log_path: &std::path::Path,
 ) -> Result<(), String> {
     let (host, port, app) = RelayRuntime::parse_target(target_url)?;
     let listener = TcpListener::bind("127.0.0.1:1935")
@@ -1402,12 +1490,26 @@ fn run_pump(
     // پروب باعث افت اضافه نشود) و بالارفتن فقط از روی پروب تصمیم
     // گرفته می‌شود. سقف پروب را TCP و نرخ ورودی Meld تعیین می‌کنند،
     // نه سطل توکن.
+    // سطر شروع سشن در لاگ (بدون کلید استریم — target_url فقط
+    // آدرس و اپ دارد). نسخه از CARGO_PKG_VERSION می‌آید تا همیشه
+    // با خود باینری هم‌گام باشد.
+    append_log_line(
+        log_path,
+        &format!(
+            "# session start unix={} target={} version={}",
+            unix_now(),
+            target_url,
+            env!("CARGO_PKG_VERSION")
+        ),
+    );
     let mut queue = OutQueue::new(MAX_QUEUE_BYTES);
     let mut bucket = TokenBucket::new(ladder.lock().unwrap().current_kbps() as f64);
     let mut window_start = Instant::now();
     let mut window_bytes: u64 = 0;
     let mut window_index: u64 = 0;
     let mut probe_active = false;
+    let pump_start = Instant::now();
+    let mut last_log = pump_start;
 
     while !stop.load(Ordering::SeqCst) {
         // خواندن از Meld (timeout یعنی «فعلاً چیزی نیست»، خطا یعنی قطع).
@@ -1442,6 +1544,32 @@ fn run_pump(
             let mut st = stats.lock().unwrap();
             st.dropped_gops = queue.dropped_gops;
             st.dropped_bytes = queue.dropped_bytes;
+        }
+        // نمونه‌ی لاگ هر ۵ ثانیه: همان عددهای پنل، از همان
+        // Mutexهایی که فرانت می‌خواند — پس لاگ و پنل یکی‌اند.
+        if last_log.elapsed() >= RELAY_LOG_INTERVAL {
+            last_log = Instant::now();
+            let (cur, ema) = {
+                let lad = ladder.lock().unwrap();
+                (lad.current_kbps(), lad.capacity_ema_kbps)
+            };
+            let st = stats.lock().unwrap();
+            let line = format_log_sample(
+                unix_now(),
+                pump_start.elapsed().as_secs(),
+                cur,
+                ema,
+                *last_probe.lock().unwrap(),
+                *queue_bytes.lock().unwrap(),
+                *queue_age.lock().unwrap(),
+                *drain.lock().unwrap(),
+                st.forwarded_bytes,
+                st.forwarded_msgs,
+                st.dropped_gops,
+                st.dropped_bytes,
+                "",
+            );
+            append_log_line(log_path, &line);
         }
         // ارسال: در پنجره‌ی پروب بدون سقف، وگرنه تا جایی که توکن هست.
         while let Some(front) = queue.msgs.front() {
@@ -1515,6 +1643,9 @@ fn run_pump(
             }
         }
     }
+    // توقف تمیز: مرز سشن در لاگ می‌ماند تا نمونه‌های دو استریم
+    // جدا خوانده شوند. (در قطع با خطا، سطر شروع بعدی مرز است.)
+    append_log_line(log_path, &format!("# session end unix={}", unix_now()));
     Ok(())
 }
 
@@ -1774,5 +1905,34 @@ mod tests {
         );
         assert!(RelayRuntime::parse_target("http://x/app").is_err());
         assert!(RelayRuntime::parse_target("rtmp://host").is_err());
+    }
+
+    #[test]
+    fn log_sample_line_format() {
+        // خروجی دقیق سطر نمونه: اعداد اعشاری با یک رقم اعشار برای
+        // سن صف و بدون اعشار برای بقیه — پارسر تحلیل لاگ روی همین
+        // قالب حساب می‌کند.
+        assert_eq!(
+            format_log_sample(1700000000, 65, 6000, 6123.6, 0.0, 123456, 3.7, 5987.2, 987654321, 54321, 12, 345678, ""),
+            "1700000000,65,6000,6124,0,123456,3.7,5987,987654321,54321,12,345678,"
+        );
+    }
+
+    #[test]
+    fn log_field_sanitized() {
+        // ویرگول و خط جدید در خطا، سطر CSV را نمی‌شکند.
+        assert_eq!(
+            sanitize_log_field("ارسال, قطع شد\nدوباره"),
+            "ارسال؛ قطع شد دوباره"
+        );
+    }
+
+    #[test]
+    fn log_path_is_findable() {
+        // مسیر همیشه یک فایل با همین نام است و پوشه‌ی والدش واقعاً
+        // وجود دارد — وگرنه کاربر فایل را پیدا نمی‌کند.
+        let p = pick_log_path();
+        assert_eq!(p.file_name().unwrap(), RELAY_LOG_FILE);
+        assert!(p.parent().unwrap().is_dir());
     }
 }

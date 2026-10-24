@@ -50,6 +50,7 @@ struct RelayStatusRow {
     drain_kbps: f64,
     uptime_secs: u64,
     last_error: Option<String>,
+    log_path: String,
 }
 
 /// شروع رله‌ی تطبیقی: Meld باید با Custom RTMP به 127.0.0.1:1935/live
@@ -92,6 +93,7 @@ fn relay_status(state: tauri::State<AppState>) -> RelayStatusRow {
         drain_kbps: s.drain_kbps,
         uptime_secs: s.uptime_secs,
         last_error: s.last_error,
+        log_path: s.log_path,
     }
 }
 
