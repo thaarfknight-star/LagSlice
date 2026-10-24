@@ -209,6 +209,9 @@ pub struct QueuedMsg {
     pub payload: Vec<u8>,
     /// فقط برای ویدیو: آیا این پیام شروع یک GOP است (کی‌فریم)؟
     pub is_keyframe: bool,
+    /// لحظه‌ی رسیدن از Meld — مبنای سقف سن صف (نه timestamp مدیا
+    /// که مبدأ دلخواه دارد و دورش می‌زند).
+    pub enqueued_at: Instant,
 }
 
 /// تشخیص کی‌فریم در تگ ویدیوی FLV.
@@ -266,36 +269,59 @@ impl OutQueue {
         self.enforce_cap();
     }
 
+    /// یک GOP کامل از جلو حذف کن و بایت حذف‌شده را برگردان: تا
+    /// کی‌فریم بعدی، ولی فقط وقتی دست‌کم یک فریم ویدیویی واقعی در
+    /// همین عملیات حذف شده باشد. این شرط جلوی جداافتادن هدر سکانس از
+    /// GOP خودش را می‌گیرد: اگر جلو فقط هدر سکانس (و صوت/متادیتا)
+    /// باشد، حذف ادامه پیدا می‌کند تا GOP بعدش هم با همان هدر برود.
+    fn drop_front_gop(&mut self) -> usize {
+        let mut removed_bytes = 0usize;
+        let mut dropped_video_frames = 0usize;
+        while let Some(front) = self.msgs.front() {
+            if front.msg_type == 9 && front.is_keyframe && dropped_video_frames > 0 {
+                break;
+            }
+            let m = self.msgs.pop_front().unwrap();
+            if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
+                dropped_video_frames += 1;
+            }
+            removed_bytes += m.payload.len();
+        }
+        if dropped_video_frames == 0 && removed_bytes == 0 {
+            return 0;
+        }
+        self.bytes = self.bytes.saturating_sub(removed_bytes);
+        self.dropped_bytes += removed_bytes as u64;
+        self.dropped_gops += 1;
+        removed_bytes
+    }
+
     fn enforce_cap(&mut self) {
         // حالت مرزی ثبت‌شده: اگر صف فقط یک پیام دارد (مثلاً یک کی‌فریم
         // غول‌پیکر بزرگ‌تر از سقف)، هیچ کاری نمی‌شود تا پیام بعدی برسد.
         while self.bytes > self.max_bytes && self.msgs.len() > 1 {
-            // یک GOP کامل از جلو حذف کن: تا کی‌فریم بعدی، ولی فقط وقتی
-            // دست‌کم یک فریم ویدیویی واقعی در همین عملیات حذف شده باشد.
-            // این شرط جلوی جداافتادن هدر سکانس از GOP خودش را می‌گیرد:
-            // اگر جلو فقط هدر سکانس (و صوت/متادیتا) باشد، حذف ادامه پیدا
-            // می‌کند تا GOP بعدش هم با همان هدر برود.
-            let mut removed_bytes = 0usize;
-            let mut dropped_video_frames = 0usize;
-            while let Some(front) = self.msgs.front() {
-                if front.msg_type == 9
-                    && front.is_keyframe
-                    && dropped_video_frames > 0
-                {
-                    break;
-                }
-                let m = self.msgs.pop_front().unwrap();
-                if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
-                    dropped_video_frames += 1;
-                }
-                removed_bytes += m.payload.len();
-            }
-            if dropped_video_frames == 0 && removed_bytes == 0 {
+            if self.drop_front_gop() == 0 {
                 break;
             }
-            self.bytes = self.bytes.saturating_sub(removed_bytes);
-            self.dropped_bytes += removed_bytes as u64;
-            self.dropped_gops += 1;
+        }
+    }
+
+    /// سقف سن صف: GOPهایی که از رسیدنشان بیش از MAX_QUEUE_AGE گذشته
+    /// دور انداخته می‌شوند تا تأخیر عبوری از رله — هرچقدر هم تخلیه‌ی
+    /// واقعی تا ingest کند باشد — از سقف رد نشود. اولویت با فریم تازه
+    /// و کی‌فریم تازه است، نه ارسال مدیای کهنه. مثل سقف بایت،
+    /// تک‌پیام تنها رها می‌شود تا صف هیچ‌وقت کاملاً خالی نشود.
+    pub fn enforce_age(&mut self, now: Instant) {
+        while self.msgs.len() > 1 {
+            let Some(front) = self.msgs.front() else {
+                break;
+            };
+            if now.duration_since(front.enqueued_at) <= MAX_QUEUE_AGE {
+                break;
+            }
+            if self.drop_front_gop() == 0 {
+                break;
+            }
         }
     }
 }
@@ -719,6 +745,10 @@ pub struct RelaySnapshot {
     pub dropped_gops: u64,
     pub dropped_bytes: u64,
     pub queue_bytes: usize,
+    /// سن قدیمی‌ترین GOP صف (ثانیه)؛ صفر یعنی صف خالی.
+    pub queue_age_secs: f64,
+    /// نرخ واقعی تخلیه‌ی آخرین پنجره‌ی ۲ ثانیه‌ای (Kbps).
+    pub drain_kbps: f64,
     pub uptime_secs: u64,
     pub last_error: Option<String>,
 }
@@ -738,6 +768,8 @@ pub struct RelayRuntime {
     stats: Arc<Mutex<RelayStats>>,
     ladder: Arc<Mutex<LadderController>>,
     queue_bytes: Arc<Mutex<usize>>,
+    queue_age: Arc<Mutex<f64>>,
+    drain: Arc<Mutex<f64>>,
     last_probe: Arc<Mutex<f64>>,
     target_host: Arc<Mutex<String>>,
     last_error: Arc<Mutex<Option<String>>>,
@@ -759,6 +791,8 @@ impl RelayRuntime {
             })),
             ladder: Arc::new(Mutex::new(LadderController::new(LADDER_DEFAULT_TOP_KBPS))),
             queue_bytes: Arc::new(Mutex::new(0)),
+            queue_age: Arc::new(Mutex::new(0.0)),
+            drain: Arc::new(Mutex::new(0.0)),
             last_probe: Arc::new(Mutex::new(0.0)),
             target_host: Arc::new(Mutex::new(String::new())),
             last_error: Arc::new(Mutex::new(None)),
@@ -827,13 +861,25 @@ impl RelayRuntime {
         let stats = self.stats.clone();
         let ladder = self.ladder.clone();
         let queue_bytes = self.queue_bytes.clone();
+        let queue_age = self.queue_age.clone();
+        let drain = self.drain.clone();
         let last_probe = self.last_probe.clone();
         let last_error = self.last_error.clone();
         let running = self.running.clone();
         let key = stream_key.to_string();
         let target = format!("rtmp://{host}:{port}/{app}");
         self.handle = Some(std::thread::spawn(move || {
-            let res = run_pump(&stop, &stats, &ladder, &queue_bytes, &last_probe, &target, &key);
+            let res = run_pump(
+                &stop,
+                &stats,
+                &ladder,
+                &queue_bytes,
+                &queue_age,
+                &drain,
+                &last_probe,
+                &target,
+                &key,
+            );
             if let Err(e) = res {
                 *last_error.lock().unwrap() = Some(e);
             }
@@ -872,6 +918,8 @@ impl RelayRuntime {
             dropped_gops: st.dropped_gops,
             dropped_bytes: st.dropped_bytes,
             queue_bytes: *self.queue_bytes.lock().unwrap(),
+            queue_age_secs: *self.queue_age.lock().unwrap(),
+            drain_kbps: *self.drain.lock().unwrap(),
             uptime_secs: uptime,
             last_error: self.last_error.lock().unwrap().clone(),
         }
@@ -879,9 +927,17 @@ impl RelayRuntime {
 }
 
 // ------------------------------------------------------------- پمپ RTMP
-/// سقف صف خروجی: ۲ مگابایت ≈ ۲ ثانیه در ۸ مگابیت — همین سقف است که
-/// تأخیر را مهار می‌کند؛ بیشتر از این یعنی حذف GOP.
+/// سقف بایت صف خروجی: ۲ مگابایت. این سقف به‌تنهایی تأخیر را مهار
+/// نمی‌کند — تأخیر صف = بایت صف ÷ نرخ واقعی تخلیه، و اگر تخلیه تا
+/// ingest کند شود همان ۲ مگ چند دقیقه تأخیر می‌شود. مهار قطعی تأخیر
+/// با سقف سن است (MAX_QUEUE_AGE): هرچه تخلیه کند باشد، GOP کهنه
+/// دور انداخته می‌شود و فریم تازه جلو می‌آید.
 const MAX_QUEUE_BYTES: usize = 2_000_000;
+/// سقف سن صف: GOP قدیمی‌تر از ۴ ثانیه (از لحظه‌ی رسیدن از Meld)
+/// حتماً دور انداخته می‌شود — تأخیر عبوری از رله از ~۴ ثانیه رد
+/// نمی‌شود، مستقل از اینکه تخلیه‌ی واقعی چقدر کند باشد. سهم ثابت
+/// MasterStream از تأخیر پایه جداست و با این سقف کم نمی‌شود.
+const MAX_QUEUE_AGE: Duration = Duration::from_secs(4);
 const WINDOW_SECS: f64 = 2.0;
 
 struct ChunkConn {
@@ -1159,12 +1215,14 @@ fn wait_command_any(
     }
 }
 
-/// حلقه‌ی اصلی پمپ: Meld ←→ Kick.
+/// حلقه‌ی اصلی پمپ: Meld ←→ ingest مقصد (در عمل MasterStream).
 fn run_pump(
     stop: &AtomicBool,
     stats: &Mutex<RelayStats>,
     ladder: &Mutex<LadderController>,
     queue_bytes: &Mutex<usize>,
+    queue_age: &Mutex<f64>,
+    drain: &Mutex<f64>,
     last_probe: &Mutex<f64>,
     target_url: &str,
     stream_key: &str,
@@ -1362,6 +1420,7 @@ fn run_pump(
                         timestamp: h.timestamp,
                         payload: body,
                         is_keyframe: is_kf,
+                        enqueued_at: Instant::now(),
                     });
                 }
                 _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
@@ -1369,8 +1428,16 @@ fn run_pump(
             Ok(None) => {}
             Err(e) => return Err(format!("خواندن از Meld قطع شد: {e}")),
         }
+        // سقف سن صف — قبل از ارسال: GOPای که موقع بلاک‌شدن write
+        // کهنه شده باشد هم نباید به‌عنوان مدیای تازه فرستاده شود.
+        queue.enforce_age(Instant::now());
         // آمار صف برای فرانت
         *queue_bytes.lock().unwrap() = queue.bytes;
+        *queue_age.lock().unwrap() = queue
+            .msgs
+            .front()
+            .map(|f| Instant::now().duration_since(f.enqueued_at).as_secs_f64())
+            .unwrap_or(0.0);
         {
             let mut st = stats.lock().unwrap();
             st.dropped_gops = queue.dropped_gops;
@@ -1400,6 +1467,10 @@ fn run_pump(
         if window_start.elapsed().as_secs_f64() >= WINDOW_SECS {
             let elapsed = window_start.elapsed().as_secs_f64().max(0.1);
             let drain_kbps = window_bytes as f64 * 8.0 / 1000.0 / elapsed;
+            // نرخ واقعی تخلیه‌ی همین پنجره (هر ۲ ثانیه تازه می‌شود) —
+            // در پنجره‌ی عادی سقف‌دار همان نرخ پله است و در پروب همان
+            // ظرفیت مسیر؛ هر دو برای تشخیص گلوگاه در پنل لازم‌اند.
+            *drain.lock().unwrap() = drain_kbps;
             window_bytes = 0;
             window_start = Instant::now();
             window_index += 1;
@@ -1545,12 +1616,12 @@ mod tests {
         // همان هدر را ببرد و IDR بعدی را بی‌سرپرست بگذارد؛ هدر باید با
         // GOP خودش یک‌جا حذف شود و صف از IDR بعدی شروع شود.
         let mut q = OutQueue::new(100);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], is_keyframe: false });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x17; 40], is_keyframe: true });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], is_keyframe: false, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
         // اضافه‌کردن IDR دوم باید سقف را رد کند و هدر سکانس + GOP اول
         // را با هم بیندازد، نه فقط هدر را.
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         assert!(q.dropped_gops >= 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
     }
@@ -1559,13 +1630,40 @@ mod tests {
     fn queue_drops_oldest_gop_over_cap() {
         let mut q = OutQueue::new(100);
         // GOP اول: کی‌فریم + ۲ فریم عادی (هرکدام ۴۰ بایت)
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
         // GOP دوم: کی‌فریم — اضافه‌کردنش باید سقف را رد کند و GOP اول را بیندازد
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         assert!(q.dropped_gops >= 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
+    fn queue_age_cap_drops_stale_gop() {
+        // سقف سن ۰٫۹٫۶: GOPای که بیش از ۴ ثانیه در صف مانده باید برود
+        // و GOP تازه بماند — حتی وقتی سقف بایت اصلاً رد نشده است.
+        let mut q = OutQueue::new(1_000_000);
+        let now = Instant::now();
+        let old = now - Duration::from_secs(10);
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
+        q.enforce_age(now);
+        assert_eq!(q.dropped_gops, 1);
+        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+    }
+
+    #[test]
+    fn queue_age_cap_keeps_single_stale_message() {
+        // حالت مرزی مثل سقف بایت: تک‌پیام تنها رها می‌شود تا صف
+        // هیچ‌وقت کاملاً خالی نشود.
+        let mut q = OutQueue::new(1_000_000);
+        let now = Instant::now();
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_secs(60) });
+        q.enforce_age(now);
+        assert_eq!(q.dropped_gops, 0);
+        assert_eq!(q.msgs.len(), 1);
     }
 
     #[test]

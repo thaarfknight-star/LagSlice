@@ -46,6 +46,8 @@ struct RelayStatusRow {
     dropped_gops: u64,
     dropped_bytes: u64,
     queue_bytes: usize,
+    queue_age_secs: f64,
+    drain_kbps: f64,
     uptime_secs: u64,
     last_error: Option<String>,
 }
@@ -86,6 +88,8 @@ fn relay_status(state: tauri::State<AppState>) -> RelayStatusRow {
         dropped_gops: s.dropped_gops,
         dropped_bytes: s.dropped_bytes,
         queue_bytes: s.queue_bytes,
+        queue_age_secs: s.queue_age_secs,
+        drain_kbps: s.drain_kbps,
         uptime_secs: s.uptime_secs,
         last_error: s.last_error,
     }

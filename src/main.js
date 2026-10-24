@@ -68,17 +68,17 @@ const STRINGS = {
     nav_guide: "راهنما",
     nav_settings: "تنظیمات",
     relay_title: "رله‌ی تطبیقی RTMP",
-    relay_hint: "وقتی بیت‌ریت شبکه نوسان دارد، ارسال مستقیم Meld به Kick باعث جمع‌شدن صف و رشد تأخیر می‌شود. رله استریم را روی همین سیستم تحویل می‌گیرد، ظرفیت واقعی مسیر تا سرور مقصد را می‌سنجد و بیت‌ریت خروجی را تطبیقی تنظیم می‌کند؛ به‌جای رشد تأخیر، فقط کمی فریم‌ریت کم می‌شود.",
+    relay_hint: "وقتی بیت‌ریت شبکه نوسان دارد، ارسال مستقیم Meld به سرور مقصد باعث جمع‌شدن صف و رشد تأخیر می‌شود. رله استریم را روی همین سیستم تحویل می‌گیرد، ظرفیت واقعی مسیر تا سرور مقصد را می‌سنجد و بیت‌ریت خروجی را تطبیقی تنظیم می‌کند؛ به‌جای رشد تأخیر، فقط کمی فریم‌ریت کم می‌شود.",
     relay_setup_title: "⚙ راه‌اندازی (یک بار)",
-    relay_step1: "از داشبورد Kick آدرس RTMP و کلید استریم را بردار و پایین وارد کن.",
+    relay_step1: "از داشبورد سرویس مقصد (مثلاً MasterStream) آدرس RTMP و کلید استریم را بردار و پایین وارد کن.",
     relay_step2: "دکمه‌ی «شروع رله» را بزن.",
     relay_step3: "در Meld یک خروجی Custom RTMP بساز: آدرس",
     relay_step3b: "و کلید دلخواه (مثلاً",
     relay_step3c: ")",
     relay_step4: "در Meld روی Go Live بزن؛ رله خودش بقیه را انجام می‌دهد.",
-    relay_target: "آدرس RTMP مقصد (Kick)",
-    relay_target_ph: "rtmp://live-ingest.kick.example/live",
-    relay_key: "کلید استریم Kick",
+    relay_target: "آدرس RTMP مقصد",
+    relay_target_ph: "rtmp://live-ingest.example.com/live",
+    relay_key: "کلید استریم مقصد",
     relay_key_ph: "••••••••",
     relay_top: "سقف بیت‌ریت (Mbps)",
     relay_key_note: "کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.",
@@ -86,11 +86,12 @@ const STRINGS = {
     relay_stop: "⏹ توقف رله",
     relay_status_title: "📊 وضعیت زنده",
     relay_state_label: "وضعیت:",
+    relay_host_label: "مقصد:",
     relay_rung_label: "بیت‌ریت خروجی فعلی:",
     relay_cap_label: "میانگین نرخ تخلیه:",
     relay_probe_label: "نتیجه‌ی آخرین پروب:",
-    relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف:",
-    relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم Kick برگردان. رله کاملاً اختیاری است و بدون آن هم LagSlice مثل قبل کار می‌کند.",
+    relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف / سن صف / تخلیه:",
+    relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم برگردان. رله کاملاً اختیاری است و بدون آن هم LagSlice مثل قبل کار می‌کند.",
     guide_title: "📖 راهنمای LagSlice",
     relay_running: "در حال اجرا ✅",
     relay_stopped: "متوقف",
@@ -230,17 +231,17 @@ const STRINGS = {
     nav_guide: "Guide",
     nav_settings: "Settings",
     relay_title: "Adaptive RTMP relay",
-    relay_hint: "When network bitrate fluctuates, sending directly from Meld to Kick queues frames up and delay grows. The relay takes the stream on this same machine, measures the real path capacity to the destination, and adapts the output bitrate — instead of growing delay, you only lose a little frame rate.",
+    relay_hint: "When network bitrate fluctuates, sending directly from Meld to the destination server queues frames up and delay grows. The relay takes the stream on this same machine, measures the real path capacity to the destination, and adapts the output bitrate — instead of growing delay, you only lose a little frame rate.",
     relay_setup_title: "⚙ Setup (once)",
-    relay_step1: "Copy the RTMP URL and stream key from your Kick dashboard and enter them below.",
+    relay_step1: "Copy the RTMP URL and stream key from your destination service dashboard (e.g. MasterStream) and enter them below.",
     relay_step2: "Press “Start relay”.",
     relay_step3: "In Meld, create a Custom RTMP output with URL",
     relay_step3b: "and any key (e.g.",
     relay_step3c: ")",
     relay_step4: "Press Go Live in Meld; the relay handles the rest.",
-    relay_target: "Destination RTMP URL (Kick)",
-    relay_target_ph: "rtmp://live-ingest.kick.example/live",
-    relay_key: "Kick stream key",
+    relay_target: "Destination RTMP URL",
+    relay_target_ph: "rtmp://live-ingest.example.com/live",
+    relay_key: "Destination stream key",
     relay_key_ph: "••••••••",
     relay_top: "Bitrate cap (Mbps)",
     relay_key_note: "The key stays on this machine only (app memory + the embedded browser's local storage); it is never sent anywhere and never logged.",
@@ -248,11 +249,12 @@ const STRINGS = {
     relay_stop: "⏹ Stop relay",
     relay_status_title: "📊 Live status",
     relay_state_label: "Status:",
+    relay_host_label: "Target:",
     relay_rung_label: "Current output bitrate:",
     relay_cap_label: "Avg drain rate:",
     relay_probe_label: "Last probe result:",
-    relay_stats_label: "Sent / GOPs dropped / queue:",
-    relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct Kick output. The relay is fully optional — LagSlice works as before without it.",
+    relay_stats_label: "Sent / GOPs dropped / queue / queue age / drain:",
+    relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct output. The relay is fully optional — LagSlice works as before without it.",
     guide_title: "📖 LagSlice guide",
     relay_running: "Running ✅",
     relay_stopped: "Stopped",
@@ -623,6 +625,10 @@ function renderRelayStatus(s) {
   document.getElementById("relayState").textContent = s.running
     ? t("relay_running")
     : t("relay_stopped");
+  // هاست واقعی مقصد (از آدرس واردشده) — برچسب همیشه درست است،
+  // چه مقصد MasterStream باشد چه هر سرویس RTMP دیگر.
+  const hostEl = document.getElementById("relayTargetHost");
+  if (hostEl) hostEl.textContent = s.running ? s.target_host : "—";
   document.getElementById("relayRung").textContent = s.running
     ? s.current_kbps + " Kbps" + (s.at_top ? " (" + t("relay_at_top") + ")" : "")
     : "—";
@@ -633,7 +639,7 @@ function renderRelayStatus(s) {
     ? Math.round(s.probe_kbps) + " Kbps"
     : "—";
   document.getElementById("relayStats").textContent = s.running
-    ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB"
+    ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB / " + s.queue_age_secs.toFixed(1) + "s / " + Math.round(s.drain_kbps) + " Kbps"
     : "—";
   document.getElementById("relayError").textContent = s.last_error || "";
   if (!s.running) {
