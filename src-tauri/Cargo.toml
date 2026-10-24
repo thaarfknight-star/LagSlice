@@ -1,7 +1,7 @@
 [package]
 name = "lagslice"
-version = "0.9.11"
-description = "LagSlice — مدیریت پهنای‌باند و رزرو آپلود برای گیم و استریم"
+version = "0.9.12"
+description = "LagSlice — رله‌ی تطبیقی RTMP برای استریم"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 

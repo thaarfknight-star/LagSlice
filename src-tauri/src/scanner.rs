@@ -336,44 +336,6 @@ pub fn import_rtmp(text: &str, name: &str, region: &str) -> StreamServer {
     }
 }
 
-/// نتیجه‌ی درون‌ریزی گروهی لینک‌ها.
-#[derive(Debug, Clone, Serialize)]
-pub struct ImportOutcome {
-    /// سرورهای تازه‌ای که باید به لیست اضافه شوند.
-    pub added: Vec<StreamServer>,
-    pub count: usize,
-}
-
-/// درون‌ریزی گروهی: هر خط یک RTMP URL (قالب اختیاری: نام | rtmp://...).
-/// تکراری‌ها (هاست+پورت تکراری نسبت به لیست موجود و خود متن) رد می‌شوند.
-/// عین import_rtmp_bulk نسخه‌ی پایتون.
-pub fn import_rtmp_bulk(text: &str, existing: &[StreamServer]) -> ImportOutcome {
-    let mut seen: std::collections::HashSet<(String, u16)> = existing
-        .iter()
-        .map(|s| (s.host.to_lowercase(), s.port))
-        .collect();
-    let mut added = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (name, link) = match line.split_once('|') {
-            Some((n, l)) => (n.trim(), l.trim()),
-            None => ("", line),
-        };
-        let (host, port) = parse_rtmp(link);
-        if host.is_empty() || !seen.insert((host.to_lowercase(), port)) {
-            continue;
-        }
-        added.push(import_rtmp(link, name, ""));
-    }
-    ImportOutcome {
-        count: added.len(),
-        added,
-    }
-}
-
 /// اسکن موازی همه‌ی سرورها (یک نخ به‌ازای هر سرور)؛ خروجی به ترتیب
 /// ورودی برمی‌گردد تا فرانت خودش بر اساس امتیاز مرتب کند.
 pub fn scan_all(servers: &[StreamServer]) -> Vec<ProbeResult> {
@@ -457,19 +419,6 @@ mod tests {
         assert_eq!(detect_region("fra.stream.de"), "de");
         assert_eq!(detect_region("ams.example.com"), "nl");
         assert_eq!(detect_region("example.org"), "");
-    }
-
-    #[test]
-    fn bulk_import_dedupes() {
-        let existing = vec![import_rtmp("rtmp://a.example.com", "", "")];
-        let out = import_rtmp_bulk(
-            "rtmp://a.example.com\nتهران | rtmp://ir2.example.com:1936/live\n# comment\n\nrtmp://ir2.example.com:1936",
-            &existing,
-        );
-        assert_eq!(out.count, 1);
-        assert_eq!(out.added[0].name, "تهران");
-        assert_eq!(out.added[0].region, "ir");
-        assert_eq!(out.added[0].port, 1936);
     }
 
     #[test]

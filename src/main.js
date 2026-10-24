@@ -15,10 +15,6 @@ const DEFAULT_SETTINGS = {
   ping_enabled: true,
   theme: "lagslice",
   tray: true,
-  active: false,
-  keepApps: [],
-  manualCaps: {},
-  closeOthers: true,
   updateMode: "notify",
   mode: "stream",
 };
@@ -38,9 +34,6 @@ function loadSettings() {
         if (!["fa", "en"].includes(cfg.lang)) cfg.lang = "fa";
         if (!["lagslice", "neon_purple", "ice_blue"].includes(cfg.theme)) cfg.theme = "lagslice";
         if (!Array.isArray(cfg.servers) || !cfg.servers.length) cfg.servers = ["8.8.8.8"];
-        if (!Array.isArray(cfg.keepApps)) cfg.keepApps = [];
-        if (!cfg.manualCaps || typeof cfg.manualCaps !== "object") cfg.manualCaps = {};
-        if (typeof cfg.closeOthers !== "boolean") cfg.closeOthers = true;
         return cfg;
       }
     }
@@ -59,10 +52,8 @@ let settings = loadSettings();
 // رشته‌های رابط — فارسی از lang.py نسخه‌ی پایتون؛ انگلیسی هم همان‌جا هست.
 const STRINGS = {
   fa: {
-    subtitle: "مدیریت پهنای‌باند بین گیم و استریم",
-    total_up: "آپلود کل",
+    subtitle: "رله‌ی تطبیقی RTMP برای استریم",
     ping_label: "پینگ سرور",
-    nav_main: "برنامه‌ها",
     nav_scan: "اسکن سرورها",
     nav_relay: "رله‌ی تطبیقی",
     nav_guide: "راهنما",
@@ -95,7 +86,7 @@ const STRINGS = {
     relay_probe_label: "نتیجه‌ی آخرین پروب:",
     relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف / سن صف / تخلیه:",
     relay_log_label: "فایل لاگ (هر ۵ ثانیه یک نمونه؛ برای فرستادن به پشتیبانی):",
-    relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم برگردان. رله کاملاً اختیاری است و بدون آن هم LagSlice مثل قبل کار می‌کند.",
+    relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم برگردان.",
     guide_title: "📖 راهنمای LagSlice",
     relay_running: "در حال اجرا ✅",
     relay_stopped: "متوقف",
@@ -130,51 +121,10 @@ const STRINGS = {
     scan_need_host: "اول هاست سرور را وارد کن.",
     scan_link: "لینک سرور (RTMP)",
     scan_link_ph: "rtmp://host:1935/live",
-    scan_bulk: "درون‌ریزی گروهی (هر خط یک لینک)",
-    scan_bulk_ph: "rtmp://ir1.example.com/live",
-    scan_import: "درون‌ریزی",
-    scan_imported: "{count} سرور اضافه شد.",
     scan_pick_best: "⭐ انتخاب بهترین سرور",
     scan_active: "فعال",
     scan_no_best: "هنوز سرور سالمی اسکن نشده است.",
-    reserve_title: "رزرو آپلود برای استریم",
-    reserve_hint: "مقداری از آپلود را برای Meld Studio رزرو کن؛ بقیه‌ی برنامه‌ها خودکار سقف می‌گیرند تا سهم استریم را نخورند.",
-    reserve_label: "رزرو (Mbps)",
-    stream_app_label: "برنامه‌ی استریم",
-    apply_reserve: "اعمال رزرو",
-    clear_caps: "حذف همه‌ی سقف‌ها",
-    apps_title: "برنامه‌ها و آپلود زنده",
-    col_app: "برنامه",
-    col_up: "آپلود (Kbps)",
-    col_down: "دانلود (Kbps)",
-    col_cap: "سقف آپلود (Kbps)",
-    col_kill: "بستن برنامه",
-    measuring: "در حال اندازه‌گیری…",
-    empty_rates: "هنوز ترافیک آپلودی دیده نشد…",
-    cap_placeholder: "بدون سقف",
-    cap_apply: "اعمال سقف",
-    btn_kill: "بستن",
-    kill_ok: "بسته شد",
-    kill_err: "بستن ناموفق بود",
-    kill_preview: "پیش‌نمایش مرورگر: «{name}» بسته شد (شبیه‌سازی).",
-    kill_no_backend: "دستور بستن (kill_process) هنوز در هسته‌ی Rust پیاده نشده است.",
     no_response: "بدون پاسخ",
-    reserve_preview: "پیش‌نمایش مرورگر: در نسخه‌ی نهایی رزرو از اینجا اعمال می‌شود.",
-    applying: "در حال اعمال…",
-    reserve_done: "انجام شد — آپلود کل {total}؛ {count} برنامه سقف گرفتند تا {reserve} برای استریم رزرو بماند.",
-    caps_cleared: "همه‌ی سقف‌ها حذف شدند.",
-    programs_title: "همه‌ی برنامه‌ها — انتخاب و محدودیت",
-    programs_refresh: "بازخوانی فهرست",
-    programs_add: "افزودن برنامه از فایل…",
-    programs_search_ph: "جست‌وجوی برنامه…",
-    close_others: "با فعال‌سازی موتور، برنامه‌های انتخاب‌نشده بسته شوند",
-    programs_hint: "برنامه‌های تیک‌خورده «مجاز»اند: باز می‌مانند و می‌شود برایشان سقف آپلود گذاشت. بقیه‌ی برنامه‌های در حال اجرا با فعال‌شدن موتور بسته می‌شوند؛ برنامه‌های سیستمی ویندوز هرگز بسته نمی‌شوند.",
-    prog_running: "در حال اجرا",
-    prog_not_running: "اجرا نیست",
-    prog_traffic: "ترافیک دارد",
-    prog_remove: "حذف",
-    prog_empty: "برنامه‌ای پیدا نشد.",
-    closed_apps: "بسته شد: ",
     error_prefix: "خطا: ",
     set_sec_net: "🌐 سرور پینگ و بیت‌ریت",
     set_server: "سرور پینگ:",
@@ -194,14 +144,8 @@ const STRINGS = {
     theme_ice_blue: "آبی یخی",
     set_sec_general: "⚙ عمومی",
     set_tray: "بستن به سینی سیستم (exit to tray)",
-    engine_label: "محدودیت‌ها فعال",
-    engine_on: "موتور محدودیت فعال شد — سقف‌ها زنده نگه داشته می‌شوند و تثبیت‌کننده‌ی استریم کار می‌کند.",
-    engine_armed: "موتور فعال شد — هنوز ترافیکی نیست؛ با شروع آپلود سقف‌ها خودکار اعمال می‌شوند.",
-    engine_off: "موتور محدودیت خاموش شد — همه‌ی سقف‌ها حذف شدند.",
     set_sec_contact: "💬 پشتیبانی",
     set_telegram_btn: "باز کردن در تلگرام @tha_arf",
-    set_sec_help: "📖 راهنما",
-    set_open_guide: "باز کردن راهنمای داخل‌برنامه‌ای",
     set_sec_about: "ℹ درباره / لایسنس",
     set_sec_update: "🔄 به‌روزرسانی",
     set_update_check: "بررسی به‌روزرسانی",
@@ -226,10 +170,8 @@ const STRINGS = {
     upd_bad_file: "این فایل بسته‌ی آپدیت معتبر LagSlice نیست.",
   },
   en: {
-    subtitle: "Bandwidth management between game and stream",
-    total_up: "Total upload",
+    subtitle: "Adaptive RTMP relay for streaming",
     ping_label: "Server ping",
-    nav_main: "Apps",
     nav_scan: "Server scan",
     nav_relay: "Adaptive relay",
     nav_guide: "Guide",
@@ -262,7 +204,7 @@ const STRINGS = {
     relay_probe_label: "Last probe result:",
     relay_stats_label: "Sent / GOPs dropped / queue / queue age / drain:",
     relay_log_label: "Log file (one sample every 5s; send it for analysis):",
-    relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct output. The relay is fully optional — LagSlice works as before without it.",
+    relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct output.",
     guide_title: "📖 LagSlice guide",
     relay_running: "Running ✅",
     relay_stopped: "Stopped",
@@ -297,51 +239,10 @@ const STRINGS = {
     scan_need_host: "Enter the server host first.",
     scan_link: "Server link (RTMP)",
     scan_link_ph: "rtmp://host:1935/live",
-    scan_bulk: "Bulk import (one link per line)",
-    scan_bulk_ph: "rtmp://ir1.example.com/live",
-    scan_import: "Import",
-    scan_imported: "{count} servers added.",
     scan_pick_best: "⭐ Pick best server",
     scan_active: "Active",
     scan_no_best: "No healthy server has been scanned yet.",
-    reserve_title: "Reserve upload for streaming",
-    reserve_hint: "Reserve part of your upload for Meld Studio; other apps get capped automatically so they don't eat the stream's share.",
-    reserve_label: "Reserve (Mbps)",
-    stream_app_label: "Stream app",
-    apply_reserve: "Apply reserve",
-    clear_caps: "Clear all caps",
-    apps_title: "Apps & live upload",
-    col_app: "App",
-    col_up: "Upload (Kbps)",
-    col_down: "Download (Kbps)",
-    col_cap: "Upload cap (Kbps)",
-    col_kill: "Close app",
-    measuring: "Measuring…",
-    empty_rates: "No upload traffic seen yet…",
-    cap_placeholder: "No cap",
-    cap_apply: "Apply cap",
-    btn_kill: "Kill",
-    kill_ok: "closed",
-    kill_err: "failed to close",
-    kill_preview: "Browser preview: “{name}” closed (simulated).",
-    kill_no_backend: "The kill command (kill_process) is not implemented in the Rust core yet.",
     no_response: "No response",
-    reserve_preview: "Browser preview: in the final build the reserve is applied here.",
-    applying: "Applying…",
-    reserve_done: "Done — total upload {total}; {count} apps capped so {reserve} stays reserved for the stream.",
-    caps_cleared: "All caps cleared.",
-    programs_title: "All programs — select & limit",
-    programs_refresh: "Refresh list",
-    programs_add: "Add program from file…",
-    programs_search_ph: "Search programs…",
-    close_others: "When the engine activates, close unselected programs",
-    programs_hint: "Checked programs are allowed: they stay open and can get an upload cap. Other running programs are closed when the engine activates; Windows system programs are never closed.",
-    prog_running: "Running",
-    prog_not_running: "Not running",
-    prog_traffic: "Has traffic",
-    prog_remove: "Remove",
-    prog_empty: "No programs found.",
-    closed_apps: "Closed: ",
     error_prefix: "Error: ",
     set_sec_net: "🌐 Ping servers & bitrate",
     set_server: "Ping server:",
@@ -361,14 +262,8 @@ const STRINGS = {
     theme_ice_blue: "Ice Blue",
     set_sec_general: "⚙ General",
     set_tray: "Close to system tray (exit to tray)",
-    engine_label: "Limits active",
-    engine_on: "Limits engine is ON — caps stay applied live and the stream stabilizer is working.",
-    engine_armed: "Engine is ON — no traffic yet; caps will apply automatically once upload starts.",
-    engine_off: "Limits engine is OFF — all caps removed.",
     set_sec_contact: "💬 Support",
     set_telegram_btn: "Open in Telegram @tha_arf",
-    set_sec_help: "📖 Guide",
-    set_open_guide: "Open in-app guide",
     set_sec_about: "ℹ About / License",
     set_sec_update: "🔄 Updates",
     set_update_check: "Check for updates",
@@ -397,97 +292,11 @@ const STRINGS = {
 const t = (key) => (STRINGS[settings.lang] && STRINGS[settings.lang][key]) || STRINGS.fa[key] || key;
 const fill = (tpl, vars) => Object.entries(vars).reduce((s, [k, v]) => s.replaceAll(`{${k}}`, v), tpl);
 
-// پروسس‌های سیستمی ویندوز — عین NEVER_TOUCH نسخه‌ی پایتون؛ هرگز در جدول نمی‌آیند و بسته نمی‌شوند.
-const NEVER_TOUCH = new Set([
-  "system", "registry", "smss.exe", "csrss.exe", "wininit.exe",
-  "services.exe", "lsass.exe", "svchost.exe", "dwm.exe", "explorer.exe",
-  "winlogon.exe", "fontdrvhost.exe", "conhost.exe", "sihost.exe",
-  "taskhostw.exe", "runtimebroker.exe", "searchindexer.exe",
-  "audiodg.exe", "ctfmon.exe", "dllhost.exe", "wudfhost.exe",
-  "idle", "memory compression",
-]);
-
 const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(2) + " Mbps" : n.toFixed(0) + " Kbps");
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-// داده‌ی نمونه‌ی پیش‌نمایش مرورگر (قابل‌تغییر تا بستنِ شبیه‌سازی‌شده دیده شود).
-let mockRates = [
-  { pid: 101, name: "Meld Studio.exe", up_kbps: 5980, down_kbps: 120 },
-  { pid: 102, name: "cs2.exe", up_kbps: 210, down_kbps: 480 },
-  { pid: 103, name: "chrome.exe", up_kbps: 1450, down_kbps: 3200 },
-];
-
-async function refreshRates() {
-  let rates = [];
-  try {
-    if (invoke) {
-      rates = await invoke("get_app_rates");
-    } else {
-      rates = mockRates;
-    }
-  } catch (e) {
-    console.error(e);
-  }
-  rates = rates.filter((r) => !NEVER_TOUCH.has(String(r.name).toLowerCase()));
-  const total = rates.reduce((s, r) => s + r.up_kbps, 0);
-  document.getElementById("totalUp").textContent = rates.length ? fmt(total) : "—";
-
-  const body = document.getElementById("appsBody");
-  if (!rates.length) {
-    body.innerHTML = `<tr><td colspan="6" class="empty">${esc(t("empty_rates"))}</td></tr>`;
-    return;
-  }
-  body.innerHTML = rates
-    .map(
-      (r) => `<tr>
-        <td>${esc(r.name)}</td>
-        <td>${fmt(r.up_kbps)}</td>
-        <td>${fmt(r.down_kbps)}</td>
-        <td><input class="cap-input" type="number" min="64" step="64" placeholder="${esc(t("cap_placeholder"))}" data-exe="${esc(r.name)}" /></td>
-        <td><button class="cap-btn" data-exe="${esc(r.name)}">${esc(t("cap_apply"))}</button></td>
-        <td><button class="kill-btn" data-pid="${r.pid}" data-exe="${esc(r.name)}">${esc(t("btn_kill"))}</button></td>
-      </tr>`
-    )
-    .join("");
-  body.querySelectorAll(".cap-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const exe = btn.dataset.exe;
-      const input = body.querySelector(`.cap-input[data-exe="${CSS.escape(exe)}"]`);
-      const val = parseFloat(input.value);
-      if (!invoke) return;
-      await invoke("set_app_cap", { exe, capKbps: isNaN(val) ? null : val });
-    });
-  });
-  body.querySelectorAll(".kill-btn").forEach((btn) => {
-    btn.addEventListener("click", () => killApp(btn));
-  });
-}
-
 // بستن یک برنامه از جدول — معادل _kill_one نسخه‌ی پایتون:
 // در تائوری دستور kill_process هسته صدا زده می‌شود؛ در پیش‌نمایش مرورگر شبیه‌سازی می‌شود.
-async function killApp(btn) {
-  const pid = parseInt(btn.dataset.pid, 10);
-  const name = btn.dataset.exe;
-  const msg = document.getElementById("procMsg");
-  if (NEVER_TOUCH.has(String(name).toLowerCase())) return;
-  btn.disabled = true;
-  if (!invoke) {
-    mockRates = mockRates.filter((r) => r.pid !== pid);
-    msg.textContent = "✅ " + fill(t("kill_preview"), { name });
-    refreshRates();
-    return;
-  }
-  try {
-    await invoke("kill_process", { pid });
-    msg.textContent = `✅ ${name} ${t("kill_ok")}`;
-  } catch (e) {
-    const err = String(e);
-    msg.textContent = "❌ " + (/kill_process|command|not found/i.test(err) ? t("kill_no_backend") : `${t("kill_err")}: ${err}`);
-    btn.disabled = false;
-  }
-  refreshRates();
-}
-
 async function refreshPing() {
   const stat = document.getElementById("pingStat");
   if (!settings.ping_enabled) {
@@ -507,103 +316,17 @@ async function refreshPing() {
   } catch {}
 }
 
-function engineParams() {
-  const streamApp = document.getElementById("streamExe").value.trim();
-  const keep = new Map();
-  for (const n of [...(settings.keepApps || []), streamApp, "cs2.exe"]) {
-    const v = (n || "").trim();
-    if (v) keep.set(v.toLowerCase(), v);
-  }
-  return {
-    reserveMbps: parseFloat(document.getElementById("reserveInput").value) || 0,
-    whitelist: [...keep.values()],
-    streamApp,
-  };
-}
-
-async function setEngine(on) {
-  const msg = document.getElementById("reserveMsg");
-  if (!invoke) return;
-  const p = engineParams();
-  settings.stream_exe = p.streamApp;
-  try {
-    const res = await invoke("set_engine_active", {
-      active: on,
-      reserveMbps: p.reserveMbps,
-      whitelist: p.whitelist,
-      streamApp: p.streamApp,
-      closeOthers: !!settings.closeOthers,
-    });
-    msg.textContent = on ? t(res.status === "armed" ? "engine_armed" : "engine_on") : t("engine_off");
-    if (on && res.closed && res.closed.length) showClosed(res.closed);
-    if (on) setTimeout(() => void refreshPrograms(), 1500);
-  } catch (e) {
-    msg.textContent = t("error_prefix") + e;
-  }
-}
-
-document.getElementById("engineToggle").addEventListener("change", (e) => {
-  settings.active = e.target.checked;
-  saveSettings();
-  void setEngine(settings.active);
-});
-
-document.getElementById("applyReserve").addEventListener("click", async () => {
-  const msg = document.getElementById("reserveMsg");
-  if (!invoke) {
-    msg.textContent = t("reserve_preview");
-    return;
-  }
-  // موتور روشن است؟ اعمال = تازه‌سازی پارامترهای همان موتور.
-  if (settings.active) {
-    await setEngine(true);
-    return;
-  }
-  const reserveMbps = parseFloat(document.getElementById("reserveInput").value) || 0;
-  const streamExe = document.getElementById("streamExe").value.trim();
-  msg.textContent = t("applying");
-  try {
-    const rep = await invoke("apply_stream_reserve", {
-      reserveMbps,
-      whitelist: engineParams().whitelist,
-    });
-    msg.textContent = fill(t("reserve_done"), {
-      total: fmt(rep.total_up_kbps),
-      count: rep.capped.length,
-      reserve: fmt(rep.reserve_kbps),
-    });
-  } catch (e) {
-    msg.textContent = t("error_prefix") + e;
-  }
-});
-
-document.getElementById("clearCaps").addEventListener("click", async () => {
-  if (!invoke) return;
-  if (settings.active) {
-    settings.active = false;
-    document.getElementById("engineToggle").checked = false;
-    saveSettings();
-    await setEngine(false);
-    return;
-  }
-  await invoke("clear_all_caps");
-  document.getElementById("reserveMsg").textContent = t("caps_cleared");
-});
-
-// ---------- ناوبری پنج نما: برنامه‌ها / اسکن / رله / راهنما / تنظیمات ----------
+// ---------- ناوبری چهار نما: رله / اسکن / راهنما / تنظیمات ----------
 function showView(which) {
-  document.getElementById("viewMain").classList.toggle("hidden", which !== "main");
   document.getElementById("viewScan").classList.toggle("hidden", which !== "scan");
   document.getElementById("viewRelay").classList.toggle("hidden", which !== "relay");
   document.getElementById("viewGuide").classList.toggle("hidden", which !== "guide");
   document.getElementById("viewSettings").classList.toggle("hidden", which !== "settings");
-  document.getElementById("navMain").classList.toggle("active", which === "main");
   document.getElementById("navScan").classList.toggle("active", which === "scan");
   document.getElementById("navRelay").classList.toggle("active", which === "relay");
   document.getElementById("navGuide").classList.toggle("active", which === "guide");
   document.getElementById("navSettings").classList.toggle("active", which === "settings");
 }
-document.getElementById("navMain").addEventListener("click", () => showView("main"));
 document.getElementById("navScan").addEventListener("click", () => showView("scan"));
 document.getElementById("navRelay").addEventListener("click", () => showView("relay"));
 document.getElementById("navGuide").addEventListener("click", () => showView("guide"));
@@ -779,7 +502,6 @@ function applyLang() {
   themeSel.options[2].textContent = t("theme_ice_blue");
   document.getElementById("aboutText").style.direction = settings.lang === "fa" ? "rtl" : "ltr";
   refreshPing();
-  refreshRates();
   if (scanLoaded) renderScan();
 }
 
@@ -795,7 +517,6 @@ function fillSettingsForm() {
   document.getElementById("setLang").value = settings.lang;
   document.getElementById("setTheme").value = settings.theme;
   document.getElementById("setTray").checked = !!settings.tray;
-  document.getElementById("reserveInput").value = settings.bitrate_mbps;
 }
 
 document.getElementById("saveSettings").addEventListener("click", () => {
@@ -809,7 +530,6 @@ document.getElementById("saveSettings").addEventListener("click", () => {
   settings.bitrate_mbps = isNaN(bitrate) ? 8.0 : Math.min(50, Math.max(1, bitrate));
   settings.ping_enabled = document.getElementById("setPingEnabled").checked;
   saveSettings();
-  document.getElementById("reserveInput").value = settings.bitrate_mbps;
   document.getElementById("settingsMsg").textContent = t("settings_saved");
   refreshPing();
 });
@@ -834,176 +554,7 @@ document.getElementById("setTray").addEventListener("change", (e) => {
   settings.tray = e.target.checked;
   saveSettings();
   pushTraySetting();
-
-// موتور محدودیت: وضعیت سوییچ و برنامه‌ی استریم را برگردان و اگر روشن
-// مانده بود، بعد از گرم‌شدن اندازه‌گیری خودش دوباره فعالش کن.
-if (settings.stream_exe) document.getElementById("streamExe").value = settings.stream_exe;
-document.getElementById("engineToggle").checked = !!settings.active;
-if (settings.active && invoke) {
-  setTimeout(() => void setEngine(true), 2500);
-}
 });
-
-document.getElementById("openGuide").addEventListener("click", () => {
-  showView("guide");
-});
-
-// ---------- همه‌ی برنامه‌ها: انتخاب (مجاز)، سقف و بستن انتخاب‌نشده‌ها ----------
-let progRows = [];
-
-function showClosed(names) {
-  const el = document.getElementById("closedLog");
-  if (!el || !names.length) return;
-  const prev = el.textContent ? el.textContent + "‏، " : t("closed_apps");
-  el.textContent = prev + names.join("‏، ");
-}
-
-function progEntries() {
-  const caps = settings.manualCaps || {};
-  const live = (progRows || []).map((p) => ({ ...p, running: true }));
-  const liveNames = new Set(live.map((p) => p.name.toLowerCase()));
-  const saved = [];
-  const seen = new Set();
-  for (const n of [...(settings.keepApps || []), ...Object.keys(caps)]) {
-    const key = String(n).toLowerCase();
-    if (liveNames.has(key) || seen.has(key)) continue;
-    seen.add(key);
-    saved.push({ name: n, path: "", pid_count: 0, network: false, running: false });
-  }
-  const keep = new Set((settings.keepApps || []).map((x) => String(x).toLowerCase()));
-  return [...live, ...saved].sort((a, b) => {
-    const ka = keep.has(a.name.toLowerCase()) ? 0 : 1;
-    const kb = keep.has(b.name.toLowerCase()) ? 0 : 1;
-    if (ka !== kb) return ka - kb;
-    if (a.running !== b.running) return a.running ? -1 : 1;
-    return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
-  });
-}
-
-function renderPrograms() {
-  const list = document.getElementById("progList");
-  if (!list) return;
-  const q = (document.getElementById("progSearch").value || "").trim().toLowerCase();
-  const keep = new Set((settings.keepApps || []).map((x) => String(x).toLowerCase()));
-  const caps = settings.manualCaps || {};
-  const all = progEntries().filter(
-    (r) => !q || r.name.toLowerCase().includes(q) || (r.path || "").toLowerCase().includes(q)
-  );
-  if (!all.length) {
-    list.innerHTML = `<p class="hint">${esc(t("prog_empty"))}</p>`;
-    return;
-  }
-  list.innerHTML = all
-    .map((r) => {
-      const key = r.name.toLowerCase();
-      const checked = keep.has(key) ? "checked" : "";
-      const capVal = caps[r.name] ?? caps[key] ?? "";
-      const badges = [
-        `<span class="badge ${r.running ? "run" : "off"}">${esc(t(r.running ? "prog_running" : "prog_not_running"))}</span>`,
-        r.network ? `<span class="badge net">${esc(t("prog_traffic"))}</span>` : "",
-      ].join(" ");
-      const removeBtn = r.running
-        ? ""
-        : `<button data-act="remove" data-exe="${esc(r.name)}">${esc(t("prog_remove"))}</button>`;
-      return `<div class="prog-row">
-        <label><input type="checkbox" data-act="keep" data-exe="${esc(r.name)}" ${checked}> <span class="prog-name">${esc(r.name)}</span></label>
-        ${badges}
-        <span class="prog-path">${esc(r.path || "")}</span>
-        <input class="cap-input" type="number" min="64" step="64" placeholder="Kbps" data-exe="${esc(r.name)}" value="${esc(String(capVal))}">
-        <button data-act="cap" data-exe="${esc(r.name)}">${esc(t("cap_apply"))}</button>
-        ${removeBtn}
-      </div>`;
-    })
-    .join("");
-}
-
-async function pushKeepApps() {
-  if (!invoke || !settings.active) return;
-  try {
-    await invoke("set_keep_apps", { whitelist: engineParams().whitelist });
-  } catch {}
-}
-
-async function refreshPrograms() {
-  if (invoke) {
-    try {
-      progRows = await invoke("list_programs");
-    } catch {}
-  }
-  // وسط تایپ کاربر در پنل، رندر را نگه دار تا فوکوس نپرد.
-  const list = document.getElementById("progList");
-  if (list && list.contains(document.activeElement) && document.activeElement.classList.contains("cap-input")) return;
-  renderPrograms();
-}
-
-document.getElementById("progList").addEventListener("change", async (e) => {
-  const el = e.target;
-  if (el.dataset.act !== "keep") return;
-  const exe = el.dataset.exe;
-  const key = exe.toLowerCase();
-  settings.keepApps = (settings.keepApps || []).filter((x) => String(x).toLowerCase() !== key);
-  if (el.checked) settings.keepApps.push(exe);
-  saveSettings();
-  await pushKeepApps();
-  renderPrograms();
-});
-
-document.getElementById("progList").addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-act]");
-  if (!btn) return;
-  const exe = btn.dataset.exe;
-  const key = exe.toLowerCase();
-  if (btn.dataset.act === "cap") {
-    const input = document.querySelector(`.prog-row .cap-input[data-exe="${CSS.escape(exe)}"]`);
-    const val = parseFloat(input ? input.value : "");
-    if (!settings.manualCaps) settings.manualCaps = {};
-    if (isNaN(val)) delete settings.manualCaps[exe];
-    else settings.manualCaps[exe] = val;
-    saveSettings();
-    if (invoke) await invoke("set_app_cap", { exe, capKbps: isNaN(val) ? null : val }).catch(() => {});
-  } else if (btn.dataset.act === "remove") {
-    settings.keepApps = (settings.keepApps || []).filter((x) => String(x).toLowerCase() !== key);
-    if (settings.manualCaps) delete settings.manualCaps[exe];
-    saveSettings();
-    if (invoke) await invoke("set_app_cap", { exe, capKbps: null }).catch(() => {});
-    await pushKeepApps();
-    renderPrograms();
-  }
-});
-
-document.getElementById("progSearch").addEventListener("input", renderPrograms);
-document.getElementById("progRefresh").addEventListener("click", () => void refreshPrograms());
-document.getElementById("progAdd").addEventListener("click", async () => {
-  if (!invoke) return;
-  const path = await invoke("pick_program_file").catch(() => null);
-  if (!path) return;
-  const name = String(path).split(/[\\/]/).pop();
-  if (!name) return;
-  const key = name.toLowerCase();
-  if (!(settings.keepApps || []).some((x) => String(x).toLowerCase() === key)) {
-    settings.keepApps = [...(settings.keepApps || []), name];
-    saveSettings();
-  }
-  await pushKeepApps();
-  await refreshPrograms();
-});
-
-const closeOthersEl = document.getElementById("closeOthers");
-closeOthersEl.checked = !!settings.closeOthers;
-closeOthersEl.addEventListener("change", () => {
-  settings.closeOthers = closeOthersEl.checked;
-  saveSettings();
-});
-
-setInterval(() => void refreshPrograms(), 15000);
-// گزارش بستن‌های دوره‌ای موتور (جارو) — هر ۵ ثانیه خوانده می‌شود.
-setInterval(async () => {
-  if (!invoke || !settings.active) return;
-  const names = await invoke("take_closed_log").catch(() => null);
-  if (names && names.length) showClosed(names);
-}, 5000);
-void refreshPrograms();
-
 
 // ---------- موتور آپدیت v2 (فید ثابت + دانلود قابل‌ادامه + هلپر نصب) ----------
 // دقیقاً مدل شیرین‌حساب: check_update2 ← download_update2 (رویداد پیشرفت
@@ -1302,36 +853,6 @@ document.getElementById("addServer").addEventListener("click", async () => {
   await persistScanServers();
 });
 
-document.getElementById("importBulk").addEventListener("click", async () => {
-  const text = document.getElementById("scanBulk").value;
-  const msg = document.getElementById("scanMsg");
-  if (!text.trim()) return;
-  try {
-    let outcome;
-    if (invoke) {
-      outcome = await invoke("import_server_links", { text, existing: scanList });
-    } else {
-      const seen = new Set(scanList.map((s) => `${s.host.toLowerCase()}:${s.port}`));
-      const added = [];
-      for (const line of text.split(/\n+/)) {
-        const p = parseLinkPreview(line.includes("|") ? line.split("|")[1] : line);
-        if (!p.host || seen.has(`${p.host}:${p.port}`)) continue;
-        seen.add(`${p.host}:${p.port}`);
-        added.push({ id: "s" + Date.now().toString(36) + added.length, name: (line.includes("|") ? line.split("|")[0].trim() : "") || p.host, region: "", host: p.host, port: p.port });
-      }
-      outcome = { added, count: added.length };
-    }
-    if (outcome.added.length) {
-      scanList = scanList.concat(outcome.added);
-      await persistScanServers();
-    }
-    msg.textContent = fill(t("scan_imported"), { count: outcome.count });
-    document.getElementById("scanBulk").value = "";
-  } catch (e) {
-    msg.textContent = t("error_prefix") + e;
-  }
-});
-
 // انتخاب بهترین سرور: بهترین نتیجه‌ی اسکن (کمترین امتیازِ سالم) سرور
 // فعال می‌شود و به‌عنوان سرور پینگ/استریم برنامه تنظیم می‌گردد.
 document.getElementById("pickBest").addEventListener("click", () => {
@@ -1390,7 +911,5 @@ applyLang();
 pushTraySetting();
 updStartup();
 loadScanServers();
-refreshRates();
 refreshPing();
-setInterval(refreshRates, 1000);
 setInterval(refreshPing, 5000);
