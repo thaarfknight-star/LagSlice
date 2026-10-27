@@ -1,6 +1,6 @@
 [package]
 name = "lagslice"
-version = "0.9.13"
+version = "0.9.14"
 description = "LagSlice — رله‌ی تطبیقی RTMP برای استریم"
 edition = "2021"
 license = "MIT OR Apache-2.0"
