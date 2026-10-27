@@ -1147,6 +1147,9 @@ struct ChunkConn {
     stream: TcpStream,
     chunk_size: usize,
     prev_headers: HashMap<u32, MsgHeader>,
+    /// پرچم توقفِ فاز مدیا (۰٫۹٫۱۴): وقتی ست است، خواندنِ ادامه‌ی پیام
+    /// روی timeout سوکت صبر و تکرار می‌کند (پایین را ببین).
+    stop_flag: Option<Arc<AtomicBool>>,
 }
 
 impl ChunkConn {
@@ -1155,12 +1158,59 @@ impl ChunkConn {
             stream,
             chunk_size: CHUNK_SIZE_DEFAULT,
             prev_headers: HashMap::new(),
+            stop_flag: None,
         }
     }
 
-    /// خواندن دقیق n بایت (با timeout سوکت؛ خطا = قطع یا timeout).
+    /// ست‌کردن پرچم توقف برای فاز مدیا. فقط بعد از هندشیک صدا زده
+    /// می‌شود تا deadlineهای فاز هندشیک (wait_command) پابرجا بمانند.
+    fn set_stop_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.stop_flag = Some(flag);
+    }
+
+    /// خواندن دقیق n بایت.
+    /// با پرچم توقف (فاز مدیا، ۰٫۹٫۱۴): timeout خواندن (۲۰۰ms) وسطِ
+    /// پیام یعنی «هنوز بایت نرسیده» و خواندن تکرار می‌شود تا بایت‌ها
+    /// کامل شوند یا توقف زده شود — مکثِ Meld وسطِ پیام (مثلاً بین
+    /// چانک‌های یک کیفریم وقتی بازی GPU را شلوغ می‌کند) دیگر سشن را
+    /// نمی‌کشد. هر تلاش حداکثر ۲۰۰ms بلاک می‌شود، پس توقف حداکثر
+    /// همان‌قدر دیر دیده می‌شود. فقط قطعِ واقعی (EOF/reset) یا توقف،
+    /// خطا برمی‌گرداند. بدون پرچم (فاز هندشیک)، رفتارِ قبلی است:
+    /// همان یک تلاش.
     fn read_exact_into(&mut self, out: &mut [u8]) -> std::io::Result<()> {
-        self.stream.read_exact(out)
+        if self.stop_flag.is_none() {
+            return self.stream.read_exact(out);
+        }
+        let mut done = 0;
+        while done < out.len() {
+            match self.stream.read(&mut out[done..]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "اتصال بسته شد",
+                    ))
+                }
+                Ok(n) => done += n,
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    if self
+                        .stop_flag
+                        .as_ref()
+                        .map(|f| f.load(Ordering::SeqCst))
+                        .unwrap_or(false)
+                    {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "توقف در میانه‌ی خواندن",
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// خواندن یک پیام کامل RTMP. None یعنی timeout (باید دوباره صدا شود).
@@ -1290,7 +1340,7 @@ impl ChunkConn {
 
     fn read_byte_blocking(&mut self) -> std::io::Result<u8> {
         let mut b = [0u8; 1];
-        self.stream.read_exact(&mut b)?;
+        self.read_exact_into(&mut b)?;
         Ok(b[0])
     }
 }
@@ -1498,6 +1548,11 @@ fn run_reader(
             },
             Ok(None) => {} // timeout ۲۰۰ms: پرچم توقف دوباره چک می‌شود
             Err(e) => {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    // توقفِ زده‌شده وسطِ خواندنِ تحمل‌پذیر: پایانِ
+                    // تمیز است، نه خطا؛ پرچم از قبل ست است.
+                    return Ok(());
+                }
                 stop.store(true, Ordering::SeqCst);
                 return Err(format!("خواندن از Meld قطع شد: {e}"));
             }
@@ -1559,6 +1614,11 @@ fn run_pump(
     meld_stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
+    // Nagle خاموش (۰٫۹٫۱۴): ارسال‌های کوچکِ RTMP نباید معطلِ تأییدِ
+    // گیرنده بمانند؛ روی مسیرِ RTTدار سقفِ تخلیه را پایین می‌کشید.
+    meld_stream
+        .set_nodelay(true)
+        .map_err(|e| e.to_string())?;
     let mut meld = meld_stream;
     server_handshake(&mut meld).map_err(|e| format!("هندشیک با Meld ناموفق: {e}"))?;
     send_chunk_size(&mut meld, CHUNK_SIZE_NEGOTIATED)
@@ -1610,6 +1670,7 @@ fn run_pump(
     // فاز هندشیک مقصد: خواندن ۱۰ ثانیه — از ایران RTT تا ingest کیک
     // راحت از ۲۰۰ms می‌گذرد و timeout کوتاه شروع رله را بی‌دلیل fail
     // می‌کرد. بعد از publish به ۲۰۰ms برمی‌گردیم. نوشتن ۵ ثانیه سقف دارد.
+    up.set_nodelay(true).map_err(|e| e.to_string())?;
     up.set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
     up.set_write_timeout(Some(Duration::from_secs(5)))
@@ -1721,6 +1782,10 @@ fn run_pump(
     // تضمین می‌کند با هر خروجی از run_pump، پرچم توقف زده شود.
     let _stop_guard = StopOnDrop(stop.clone());
     let mut pump_res: Result<(), String> = Ok(());
+    // فاز مدیا (۰٫۹٫۱۴): از اینجا به بعد، خواندنِ ادامه‌ی پیام
+    // timeout را تحمل می‌کند. در فاز هندشیکِ بالا پرچم ست نبود تا
+    // deadlineهای wait_command پابرجا بمانند.
+    meld_conn.set_stop_flag(stop.clone());
     let reader_handle = {
         let reader_queue = queue.clone();
         let reader_stop = stop.clone();
@@ -2373,5 +2438,91 @@ mod tests {
         let p = pick_log_path();
         assert_eq!(p.file_name().unwrap(), RELAY_LOG_FILE);
         assert!(p.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn mid_message_pause_tolerated() {
+        // رگرسیون باگ ۰٫۹٫۱۳: مکثِ بیش از timeout خواندن (۲۰۰ms) وسطِ
+        // یک پیام، سشن را با خطای 10060 می‌کشت — چون فقط بایتِ اول
+        // timeout را تحمل می‌کرد و ادامه‌ی پیام با read_exactِ خشک
+        // خوانده می‌شد. با پرچم توقف، ادامه‌ی پیام هم صبر و تکرار
+        // می‌کند و پیامِ کامل برمی‌گردد.
+        use std::io::Write;
+        use std::net::TcpListener;
+        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        let mut enc = encode_message(1, 0, 0, &(CHUNK_SIZE_NEGOTIATED).to_be_bytes());
+        enc.extend_from_slice(&encode_message(9, 12345, 1, &payload));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            // سه تکه با دو مکثِ ۳۵۰ms وسطِ پیام (بیش از timeout ۲۰۰ms).
+            s.write_all(&enc[..12]).unwrap();
+            std::thread::sleep(Duration::from_millis(350));
+            s.write_all(&enc[12..4200]).unwrap();
+            std::thread::sleep(Duration::from_millis(350));
+            s.write_all(&enc[4200..]).unwrap();
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let mut conn = ChunkConn::new(stream);
+        conn.set_stop_flag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let mut got = None;
+        for _ in 0..200 {
+            match conn.read_message() {
+                Ok(Some(m)) => {
+                    if m.0.msg_type == 9 {
+                        got = Some(m);
+                        break;
+                    }
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => panic!("خواندن با مکثِ وسطِ پیام ناموفق: {e}"),
+            }
+        }
+        writer.join().unwrap();
+        let (h, body) = got.expect("پیام با مکثِ وسطِ آن خوانده نشد");
+        assert_eq!(h.msg_type, 9);
+        assert_eq!(body, payload);
+    }
+
+    #[test]
+    fn mid_message_stop_interrupts() {
+        // اگر وسطِ انتظارِ ادامه‌ی پیام، توقف زده شود، خواندن باید
+        // سریع با Interrupted برگردد، نه اینکه تا آمدنِ بایت‌ها گیر
+        // کند و نه اینکه خطای timeout بدهد.
+        use std::io::Write;
+        use std::net::TcpListener;
+        let payload: Vec<u8> = vec![7u8; 100];
+        let mut enc = encode_message(1, 0, 0, &(CHUNK_SIZE_NEGOTIATED).to_be_bytes());
+        enc.extend_from_slice(&encode_message(9, 1, 1, &payload));
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            s.write_all(&enc[..12]).unwrap();
+            // بقیه دیر می‌آید؛ خواننده باید با توقف برگردد، نه با آن.
+            std::thread::sleep(Duration::from_secs(3));
+            let _ = s.write_all(&enc[12..]);
+        });
+        let stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut conn = ChunkConn::new(stream);
+        conn.set_stop_flag(flag.clone());
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let start = Instant::now();
+        let res = conn.read_message();
+        let elapsed = start.elapsed();
+        setter.join().unwrap();
+        writer.join().unwrap();
+        assert!(elapsed < Duration::from_secs(2), "توقف دیر دیده شد");
+        match res {
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Interrupted),
+            Ok(_) => panic!("انتظارِ Interrupted بود"),
+        }
     }
 }
