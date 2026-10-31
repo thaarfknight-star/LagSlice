@@ -12,7 +12,7 @@
       <img class="brand-logo" src="logo.png" alt="LagSlice" />
       <div>
         <h1>LagSlice</h1>
-        <p data-i18n="subtitle">رله‌ی تطبیقی RTMP برای استریم</p>
+        <p data-i18n="subtitle">رله‌ی RTMP برای استریم</p>
       </div>
     </div>
     <div class="net-summary">
@@ -21,7 +21,7 @@
   </header>
 
   <nav class="nav">
-    <button id="navRelay" class="nav-btn active" data-i18n="nav_relay">رله‌ی تطبیقی</button>
+    <button id="navRelay" class="nav-btn active" data-i18n="nav_relay">رله</button>
     <button id="navScan" class="nav-btn" data-i18n="nav_scan">اسکن سرورها</button>
     <button id="navGuide" class="nav-btn" data-i18n="nav_guide">راهنما</button>
     <button id="navSettings" class="nav-btn" data-i18n="nav_settings">تنظیمات</button>
@@ -79,8 +79,8 @@
 
   <main id="viewRelay">
     <section class="card">
-      <h2 data-i18n="relay_title">رله‌ی تطبیقی RTMP</h2>
-      <p class="hint" data-i18n="relay_hint">وقتی بیت‌ریت شبکه نوسان دارد، ارسال مستقیم Meld به سرور مقصد باعث جمع‌شدن صف و رشد تأخیر می‌شود. رله استریم را روی همین سیستم تحویل می‌گیرد، ظرفیت واقعی مسیر تا سرور مقصد را می‌سنجد و بیت‌ریت خروجی را تطبیقی تنظیم می‌کند؛ به‌جای رشد تأخیر، فقط کمی فریم‌ریت کم می‌شود.</p>
+      <h2 data-i18n="relay_title">رله‌ی RTMP</h2>
+      <p class="hint" data-i18n="relay_hint">رله استریم Meld را روی همین سیستم تحویل می‌گیرد و با ۲ ثانیه تأخیر و همان بیت‌ریت ورودی به سرور مقصد می‌فرستد؛ نوسان‌های کوتاه مسیر با بافر جذب می‌شوند و فقط وقتی مسیر برای مدت طولانی عقب بماند، کمی فریم‌ریت کم می‌شود.</p>
       <h3 class="sec-head" data-i18n="relay_setup_title">⚙ راه‌اندازی (یک بار)</h3>
       <ol class="hint">
         <li data-i18n="relay_step1">از داشبورد سرویس مقصد (مثلاً MasterStream) آدرس RTMP و کلید استریم را بردار و پایین وارد کن.</li>
@@ -97,19 +97,8 @@
         <label class="grow"><span data-i18n="relay_key">کلید استریم مقصد</span>
           <input id="relayKey" type="password" dir="ltr" data-i18n-ph="relay_key_ph" placeholder="••••••••" />
         </label>
-        <label><span data-i18n="relay_top">سقف بیت‌ریت (Mbps)</span>
-          <input id="relayTop" type="number" min="2" max="50" step="0.5" value="8" />
-        </label>
       </div>
       <p class="hint" data-i18n="relay_key_note">کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.</p>
-      <div class="row">
-        <label class="grow"><span data-i18n="relay_mode_label">حالت رله:</span>
-          <select id="relayMode">
-            <option value="zero" data-i18n="relay_mode_zero">بدون تأخیر</option>
-            <option value="fixed" data-i18n="relay_mode_fixed">بیت‌ریت ثابت (۲–۳ ثانیه تأخیر)</option>
-          </select>
-        </label>
-      </div>
       <div class="row">
         <button id="relayStart" class="primary" data-i18n="relay_start">▶ شروع رله</button>
         <button id="relayStop" data-i18n="relay_stop">⏹ توقف رله</button>
@@ -120,7 +109,6 @@
       <p class="hint"><span data-i18n="relay_host_label">مقصد:</span> <strong id="relayTargetHost">—</strong></p>
       <p class="hint"><span data-i18n="relay_rung_label">بیت‌ریت خروجی فعلی:</span> <strong id="relayRung">—</strong></p>
       <p class="hint"><span data-i18n="relay_cap_label">میانگین نرخ تخلیه:</span> <strong id="relayCap">—</strong></p>
-      <p class="hint"><span data-i18n="relay_probe_label">نتیجه‌ی آخرین پروب:</span> <strong id="relayProbe">—</strong></p>
       <p class="hint"><span data-i18n="relay_stats_label">ارسال‌شده / GOP حذف‌شده / صف / سن صف / تخلیه:</span> <strong id="relayStats">—</strong></p>
       <p class="hint"><span data-i18n="relay_log_label">فایل لاگ (هر ۵ ثانیه یک نمونه؛ برای فرستادن به پشتیبانی):</span> <strong id="relayLogPath" dir="ltr">—</strong></p>
       <p id="relayError" class="msg"></p>
@@ -134,19 +122,19 @@
       <p class="hint">این راهنما کل برنامه را قدم‌به‌قدم آموزش می‌دهد. (فعلاً فارسی است.)</p>
 
       <h3 class="sec-head">۱) LagSlice چیست؟</h3>
-      <p class="hint">LagSlice یک رله‌ی تطبیقی RTMP روی همین سیستم است: استریم Meld را تحویل می‌گیرد و با بیت‌ریت تطبیقی (یا ثابت، به انتخاب تو) به سرور مقصد (مثلاً MasterStream) می‌فرستد تا نوسان شبکه به تأخیر ویور تبدیل نشود. برنامه را با دسترسی ادمین اجرا کن تا همه‌چیز درست کار کند.</p>
+      <p class="hint">LagSlice یک رله‌ی RTMP روی همین سیستم است: استریم Meld را تحویل می‌گیرد و با ۲ ثانیه تأخیر و همان بیت‌ریت ورودی به سرور مقصد (مثلاً MasterStream) می‌فرستد تا نوسان کوتاه شبکه به تأخیر ویور تبدیل نشود. برنامه را با دسترسی ادمین اجرا کن تا همه‌چیز درست کار کند.</p>
 
       <h3 class="sec-head">۲) شروع سریع</h3>
       <ol class="hint">
         <li>از داشبورد سرویس مقصد (مثلاً MasterStream) آدرس RTMP و کلید استریم را بردار.</li>
-        <li>در صفحه‌ی «رله‌ی تطبیقی»، آدرس و کلید و سقف بیت‌ریت را وارد کن و حالت رله را انتخاب کن.</li>
+        <li>در صفحه‌ی «رله»، آدرس و کلید را وارد کن.</li>
         <li>دکمه‌ی «شروع رله» را بزن.</li>
         <li>در Meld یک خروجی Custom RTMP بساز: آدرس rtmp://127.0.0.1:1935/live و کلید دلخواه (مثلاً lagslice).</li>
         <li>در Meld روی Go Live بزن؛ رله خودش بقیه را انجام می‌دهد.</li>
       </ol>
 
-      <h3 class="sec-head">۳) دو حالت رله</h3>
-      <p class="hint">«بدون تأخیر»: نردبان تطبیقی بیت‌ریت خروجی را با ظرفیت مسیر تنظیم می‌کند (۸۰۰۰ ← ۶۰۰۰ ← ۵۰۰۰ ← ۴۰۰۰ ← ۲۵۰۰ ← ۱۵۰۰ کیلوبیت)؛ پایین‌آمدن بعد از ۲ پنجره‌ی بد (سریع)، بالارفتن بعد از ۳ پروب خوب (کند، تا نوسان نکند). پروب یعنی هر ۵ پنجره، یک پنجره بدون سقف ارسال می‌شود تا ظرفیت واقعی مسیر سنجیده شود. وقتی صف از ۲ مگابایت می‌گذرد یا سن GOP از ۴ ثانیه رد می‌شود، قدیمی‌ترین GOP کامل حذف می‌شود تا تأخیر مهار شود؛ کی‌فریم هرگز جدا از فریم‌های وابسته‌اش حذف نمی‌شود. «بیت‌ریت ثابت»: خط تأخیر ۲٫۵ ثانیه‌ای — پیام فقط وقتی فرستاده می‌شود که دست‌کم ۲٫۵ ثانیه عمر کرده باشد؛ سقف سن ۵ ثانیه؛ بدون نردبان و سطل توکن؛ خروجی با نرخ ورودی و ثابت می‌ماند و حذف فقط وقتی مسیر برای مدت طولانی عقب بماند اتفاق می‌افتد. حالت را می‌شود حتی وسط استریم هم عوض کرد، بدون ری‌استارت رله. توجه صادقانه: بیت‌ریت ثابت ۵۰۰۰ روی مسیری که ~۳۰۰۰ می‌کشد محال است؛ حالت ثابت تأخیر را با نرمی عوض می‌کند، ظرفیت نمی‌سازد.</p>
+      <h3 class="sec-head">۳) رله چطور کار می‌کند</h3>
+      <p class="hint">رله تک‌حالته است: استریم با ۲ ثانیه تأخیر شروع می‌شود و با همان بیت‌ریت ورودی (بیت‌ریت ثابت، بدون تغییر نرخ توسط رله) فرستاده می‌شود. بافر تا ۶ ثانیه سن صف را تحمل می‌کند تا افت‌های چندثانیه‌ای مسیر، فریم دور نریزند؛ اگر ingest بیش از چند ثانیه هیچ بایتی قبول نکند، رله همان سشن را نگه می‌دارد و بعد از برگشتن مسیر، فریم‌های تازه ادامه می‌یابند (تا ۱۲۰ ثانیه) — دیگر مثل قبل با یک مکث ۵ ثانیه‌ای سشن نمی‌میرد. فقط وقتی مسیر برای مدت طولانی عقب بماند، قدیمی‌ترین GOP کامل حذف می‌شود تا تأخیر مهار شود؛ کی‌فریم هرگز جدا از فریم‌های وابسته‌اش حذف نمی‌شود. توجه صادقانه: اگر ظرفیت پایدار مسیر مدت‌ها زیر نرخ ورودی بماند، حذف GOP اجتناب‌ناپذیر است — رله ظرفیت نمی‌سازد.</p>
 
       <h3 class="sec-head">۴) اسکن سرورها و انتخاب بهترین سرور</h3>
       <p class="hint">سرورها با پینگ و تست اتصال RTMP سنجیده و امتیازدهی می‌شوند؛ امتیاز کمتر یعنی سرور بهتر. سرور را با لینک RTMP اضافه کن (نام و مشخصات خودکار پر می‌شوند). با «اسکن همه» همه سنجیده می‌شوند و با «⭐ انتخاب بهترین سرور» بهترینشان به‌عنوان سرور پینگ/استریم برنامه تنظیم می‌شود. اگر با دادن لینک سرور، نام و مشخصات خودکار پر نشد، نام و منطقه را دستی وارد کن.</p>
@@ -504,3 +492,4 @@ SOFTWARE.</pre>
   <script src="main.js"></script>
 </body>
 </html>
+

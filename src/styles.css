@@ -263,19 +263,6 @@ button.ghost { background: transparent; }
 .btn-link:hover { border-color: var(--accent); box-shadow: 0 0 12px var(--glow-mid); }
 .msg { min-height: 18px; font-size: 13px; color: var(--accent); margin: 10px 0 0; }
 
-/* ── انتخاب‌گر حالت رله — برجسته و خوانا ── */
-#relayMode {
-  font-weight: 700;
-  font-size: 15px;
-  padding: 11px 16px;
-  border: 1px solid var(--accent);
-  background: var(--accent-tint);
-}
-#relayMode:focus {
-  box-shadow: 0 0 0 3px var(--glow-soft), 0 0 16px var(--glow-mid);
-}
-label:has(> #relayMode) > span { color: var(--text); font-weight: 700; font-size: 14px; }
-
 /* ── جدول اسکن ── */
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: right; font-size: 14px; }
@@ -396,3 +383,4 @@ label.check input { min-width: 0; width: 17px; height: 17px; accent-color: var(-
 .prog-row .cap-input { width: 110px; }
 .check-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 td .cap-input { min-width: 90px; width: 110px; }
+
