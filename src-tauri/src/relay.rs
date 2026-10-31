@@ -1,21 +1,30 @@
-// رله‌ی تطبیقی RTMP برای LagSlice
+// رله‌ی RTMP برای LagSlice (تک‌حالته از ۰٫۹٫۱۵)
 // Copyright (c) 2026 Taha Arefi — دوگانه‌ی MIT / Apache-2.0 (مطابق درخت جاری ریپو).
 //
-// مسئله: وقتی Meld مستقیم به Kick می‌فرستد و ظرفیت مسیر لحظه‌ای کمتر از
+// مسئله: وقتی Meld مستقیم به مقصد می‌فرستد و ظرفیت مسیر لحظه‌ای کمتر از
 // بیت‌ریت انکودر می‌شود، فریم‌ها در صف TCP جمع می‌شوند و تأخیرِ دیده‌شده
 // توسط بیننده همین‌طور بالا می‌رود. راه‌حل این ماژول: Meld با خروجی
-// Custom RTMP به رله‌ی لوکال (127.0.0.1:1935/live) می‌فرستد؛ رله نرخ
-// واقعی تخلیه به ingest مقصد را می‌سنجد و نرخ ارسال را با نردبان تطبیقی
-// تنظیم می‌کند. وقتی صف خروجی از سقف می‌گذرد، به‌جای انباشته‌شدن تأخیر،
+// Custom RTMP به رله‌ی لوکال (127.0.0.1:1935/live) می‌فرستد؛ رله پیام‌ها
+// را با یک خط تأخیر ۲ ثانیه‌ای و با همان نرخ ورودی (بیت‌ریت ثابت، بدون
+// نردبان تطبیقی و بدون پروب) به ingest مقصد می‌فرستد. خط تأخیر نوسان‌های
+// کوتاه مسیر را صاف می‌کند و وقتی مسیر برای مدت طولانی عقب بماند،
 // قدیمی‌ترین GOP کاملِ ویدیو حذف می‌شود (کی‌فریم‌ها هرگز حذف نمی‌شوند،
-// وگرنه دیکودر می‌شکند)؛ بیننده افت فریم‌ریت می‌بیند، نه رشد تأخیر.
+// وگرنه دیکودر می‌شکند)؛ بیننده افت فریم‌ریت می‌بیند، نه رشد تأخیر و
+// نه قطع‌شدن استریم.
+//
+// حرف صادقانه: رله بیت‌ریت انکودر Meld را عوض نمی‌کند و ظرفیت نمی‌سازد.
+// «بیت‌ریت ثابت» یعنی خودِ رله نرخ را بالا و پایین نمی‌کند: همان چیزی
+// را که از Meld می‌رسد، با تأخیر ۲ ثانیه می‌فرستد. اگر ظرفیت پایدار مسیر
+// مدت‌ها زیر نرخ ورودی بماند، حذف GOP اجتناب‌ناپذیر است — ولی افت‌های
+// چندثانیه‌ای مسیر با بافر ۶ ثانیه‌ای جذب می‌شوند، نه با حذف.
 //
 // امنیت: کلید استریم مقصد فقط در حافظه نگه داشته می‌شود؛ هیچ‌وقت در
 // لاگ، وضعیت، یا فایل دیسک نوشته نمی‌شود و در هیچ ساختار Debug چاپ
 // نمی‌شود. فرانت آن را فقط در localStorage خود دستگاه نگه می‌دارد.
 //
-// این فایل فقط به std وابسته است تا منطقش (نردبان، سطل توکن، فیلتر GOP،
-// پارس چانک و AMF0) با `rustc --test` بدون وابستگی ویندوز قابل آزمون باشد.
+// این فایل فقط به std وابسته است تا منطقش (خط تأخیر، فیلتر GOP،
+// نوشتن تحمل‌پذیر، پارس چانک و AMF0) با `rustc --test` بدون وابستگی
+// ویندوز قابل آزمون باشد.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -23,209 +32,6 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-// ---------------------------------------------------------------- نردبان
-/// نردبان بیت‌ریت خروجی (Kbps). سقف نردبان از تنظیم «بیت‌ریت استریم» برنامه
-/// می‌آید (پیش‌فرض ۸۰۰۰ = سقف Kick)؛ پله‌ی آخر ۱۵۰۰ کف اضطراری است تا
-/// استریم زنده بماند حتی وقتی مسیر خیلی تنگ است.
-pub const LADDER_DEFAULT_TOP_KBPS: u32 = 8000;
-pub const LADDER_FLOOR_KBPS: u32 = 1500;
-
-/// تصمیم کنترل‌کننده در یک پنجره‌ی نمونه‌گیری (پنجره = ۲ ثانیه).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RelayDecision {
-    Hold,
-    StepDown,
-    StepUp,
-}
-
-/// کنترل‌کننده‌ی نردبان با هیسترزیس نامتقارن — پایین سریع، بالا کند:
-/// پایین‌آمدن = ۲ پنجره‌ی بد پیاپی (تأخیر دشمن است، معطل نمی‌کنیم)؛
-/// بالارفتن = از ۳ پروب اخیر دست‌کم ۲ پروب بالای پله‌ی بالاتر × ۱٫۰۵
-/// (معادل میانه‌ی ۳ پروب اخیر با ۵٪ حاشیه)، هر پله فقط یک قدم.
-/// آستانه‌ها با حاشیه‌اند تا روی مرز نوسان نکنیم.
-pub struct LadderController {
-    pub rungs: Vec<u32>,
-    pub idx: usize,
-    bad_windows: u32,
-    /// ۳ پروب اخیر (قدیمی‌ترین اول) برای قانون صعود میانه‌ای.
-    probe_hist: std::collections::VecDeque<f64>,
-    pub capacity_ema_kbps: f64,
-}
-
-impl LadderController {
-    pub fn new(top_kbps: u32) -> Self {
-        let mut rungs: Vec<u32> = vec![8000, 6000, 5000, 4000, 2500, 1500]
-            .into_iter()
-            .filter(|r| *r <= top_kbps)
-            .collect();
-        if rungs.is_empty() {
-            rungs.push(top_kbps.max(LADDER_FLOOR_KBPS));
-        }
-        if *rungs.last().unwrap() != LADDER_FLOOR_KBPS && top_kbps > LADDER_FLOOR_KBPS {
-            rungs.push(LADDER_FLOOR_KBPS);
-        }
-        Self {
-            rungs,
-            idx: 0,
-            bad_windows: 0,
-            probe_hist: std::collections::VecDeque::new(),
-            capacity_ema_kbps: 0.0,
-        }
-    }
-
-    pub fn current_kbps(&self) -> u32 {
-        self.rungs[self.idx]
-    }
-
-    /// آیا پله‌ی جاری سقف نردبان است (وضعیت سالم)؟
-    pub fn at_top(&self) -> bool {
-        self.idx == 0
-    }
-
-    /// نمونه‌ی پنجره‌ی عادی (ارسال با سقف پله‌ی جاری). این نمونه فقط
-    /// برای پایین‌آمدن معتبر است: چون ارسال سقف دارد، drain اندازه‌گیری
-    /// شده هرگز از پله‌ی جاری بیشتر نمی‌شود، پس با همین نمونه نمی‌شود
-    /// فهمید مسیر پله‌ی بالاتر را می‌کشد یا نه. پایین‌آمدن: میانگین
-    /// نمایی < پله‌ی جاری × ۰٫۸۵ در ۲ پنجره‌ی پیاپی.
-    pub fn note_capacity(&mut self, cap_kbps: f64) -> RelayDecision {
-        if self.capacity_ema_kbps <= 0.0 {
-            self.capacity_ema_kbps = cap_kbps;
-        } else {
-            // میانگین نمایی با آلفای ۰٫۴: به تغییرهای تازه وزن بیشتر می‌دهد
-            // ولی تک‌نمونه‌های پرت را صاف می‌کند.
-            self.capacity_ema_kbps =
-                0.4 * cap_kbps + 0.6 * self.capacity_ema_kbps;
-        }
-        let cur = self.current_kbps() as f64;
-        if self.capacity_ema_kbps < cur * 0.85 {
-            self.bad_windows += 1;
-            self.probe_hist.clear();
-            if self.bad_windows >= 2 && self.idx + 1 < self.rungs.len() {
-                self.idx += 1;
-                self.bad_windows = 0;
-                return RelayDecision::StepDown;
-            }
-        } else {
-            self.bad_windows = 0;
-        }
-        RelayDecision::Hold
-    }
-
-    /// فقط میانگین تخلیه را تازه می‌کند، بدون هیچ تصمیم پله‌ای
-    /// (۰٫۹٫۱۱): در حالت بیت‌ریت ثابت، نردبان منجمد است ولی پنل و
-    /// لاگ هنوز باید میانگین drain را نشان بدهند.
-    pub fn note_drain_only(&mut self, drain_kbps: f64) {
-        if self.capacity_ema_kbps <= 0.0 {
-            self.capacity_ema_kbps = drain_kbps;
-        } else {
-            self.capacity_ema_kbps = 0.4 * drain_kbps + 0.6 * self.capacity_ema_kbps;
-        }
-    }
-
-    /// نمونه‌ی پنجره‌ی پروب (ارسال بدون سقف سطل توکن). فقط همین نمونه
-    /// برای بالارفتن معتبر است، چون drain در آن واقعاً ظرفیت سوکت را
-    /// نشان می‌دهد، نه سقف مصنوعی. بالارفتن (قانون ۰٫۹٫۸): از ۳ پروب
-    /// اخیر دست‌کم ۲ پروب بالای پله‌ی بالاتر × ۱٫۰۵ باشند — معادل
-    /// میانه‌ی ۳ پروب اخیر با ۵٪ حاشیه — هر بار فقط یک پله.
-    /// قانون قبلی (۳ پروب پیاپی بالای ×۱٫۱۰) روی مسیر پرنوسان عملاً
-    /// هیچ‌وقت صعود نمی‌داد: لاگ ۰٫۹٫۷ با پروب‌های ۲۰۲۱–۳۰۲۴ هیچ‌وقت
-    /// ۳تای پیاپی بالای ۲۷۵۰ نداشت و نردبان ۸۵ ثانیه روی کف ۱۵۰۰ قفل
-    /// ماند، در حالی که ظرفیت واقعی مسیر ~۲۵۰۰ بود. دلیل اصولی قانون
-    /// تازه: با سقف سن ۰٫۹٫۶، صعود بیش‌ازحد فقط افت فریمِ محدود
-    /// می‌آورد ولی ماندن پایین، عقب‌ماندگی بی‌نهایت در Meld می‌سازد —
-    /// پس نردبان باید ظرفیت را تعقیب کند، نه در کف بماند. نزول همان
-    /// ۲ پنجره‌ی بد می‌ماند تا صعود اشتباه سریع اصلاح شود.
-    pub fn note_probe(&mut self, probe_kbps: f64) -> RelayDecision {
-        if self.idx == 0 {
-            self.probe_hist.clear();
-            return RelayDecision::Hold;
-        }
-        self.probe_hist.push_back(probe_kbps);
-        while self.probe_hist.len() > 3 {
-            self.probe_hist.pop_front();
-        }
-        // میانه‌ی ۳ پروب اخیر لازم است: با کمتر از ۳ نمونه، هنوز
-        // پنجره‌ی کامل نداریم و صعود نمی‌کنیم.
-        if self.probe_hist.len() == 3 {
-            let next = self.rungs[self.idx - 1] as f64;
-            let good = self
-                .probe_hist
-                .iter()
-                .filter(|p| **p > next * 1.05)
-                .count();
-            if good >= 2 {
-                self.idx -= 1;
-                self.probe_hist.clear();
-                self.bad_windows = 0;
-                return RelayDecision::StepUp;
-            }
-        }
-        RelayDecision::Hold
-    }
-}
-
-// ------------------------------------------------------------- سطل توکن
-/// سطل توکن برای سقف نرخ ارسال: با نرخ پله‌ی جاری پر می‌شود و هر بایت
-/// ارسالی یک توکن مصرف می‌کند. وقتی خالی است، فرستنده صبر می‌کند —
-/// همین صبر است که صف را می‌سازد و فیلتر GOP را فعال می‌کند.
-pub struct TokenBucket {
-    pub rate_kbps: f64,
-    tokens: f64,
-    capacity: f64,
-    last: Instant,
-}
-
-impl TokenBucket {
-    pub fn new(rate_kbps: f64) -> Self {
-        Self {
-            rate_kbps,
-            tokens: 0.0,
-            capacity: rate_kbps * 125.0, // یک ثانیه بافر توکن (Kbps→Byte/s)
-            last: Instant::now(),
-        }
-    }
-
-    pub fn set_rate(&mut self, rate_kbps: f64) {
-        self.rate_kbps = rate_kbps;
-        self.capacity = rate_kbps * 125.0;
-        if self.tokens > self.capacity {
-            self.tokens = self.capacity;
-        }
-    }
-
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let dt = now.duration_since(self.last).as_secs_f64();
-        self.last = now;
-        self.tokens += dt * self.rate_kbps * 125.0;
-        if self.tokens > self.capacity {
-            self.tokens = self.capacity;
-        }
-    }
-
-    /// اگر به‌اندازه‌ی `bytes` توکن هست، مصرف کن و true بده.
-    pub fn try_take(&mut self, bytes: usize) -> bool {
-        self.refill();
-        if self.tokens >= bytes as f64 {
-            self.tokens -= bytes as f64;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// چقدر باید صبر کرد تا `bytes` توکن جمع شود (برای sleep فرستنده).
-    pub fn wait_ms(&mut self, bytes: usize) -> u64 {
-        self.refill();
-        if self.tokens >= bytes as f64 {
-            0
-        } else {
-            let need = bytes as f64 - self.tokens;
-            ((need / (self.rate_kbps * 125.0)) * 1000.0).ceil() as u64
-        }
-    }
-}
 
 // ------------------------------------------------------------- فیلتر GOP
 /// یک پیام RTMP کاملِ آماده‌ی ارسال (بدون هدر چانک).
@@ -338,8 +144,7 @@ impl OutQueue {
     /// واقعی تا ingest کند باشد — از سقف رد نشود. اولویت با فریم تازه
     /// و کی‌فریم تازه است، نه ارسال مدیای کهنه. مثل سقف بایت،
     /// تک‌پیام تنها رها می‌شود تا صف هیچ‌وقت کاملاً خالی نشود.
-    /// سقف پارامتر است چون حالت‌ها سقف متفاوت دارند (بدون تأخیر:
-    /// MAX_QUEUE_AGE؛ ثابت: FIXED_QUEUE_AGE).
+    /// سقف سن صف، همان QUEUE_AGE_CAP سراسری است.
     pub fn enforce_age(&mut self, now: Instant, cap: Duration) {
         while self.msgs.len() > 1 {
             let Some(front) = self.msgs.front() else {
@@ -763,15 +568,8 @@ pub struct RelaySnapshot {
     pub target_host: String,
     pub listen_addr: String,
     pub current_kbps: u32,
-    /// حالت بیت‌ریت ثابت فعال است؟ (۰٫۹٫۱۱) — پنل از روی همین،
-    /// انتخاب‌گر حالت را با وضعیت واقعی هم‌گام می‌کند.
-    pub fixed_mode: bool,
+    /// میانگین نمایی نرخ تخلیه‌ی پنجره‌های ۲ ثانیه‌ای (آلفا ۰٫۴).
     pub capacity_ema_kbps: f64,
-    /// آخرین drain پنجره‌ی پروب (Kbps)؛ صفر یعنی هنوز پروبی نشده.
-    /// توجه: capacity_ema میانگین drain پنجره‌های عادی (سقف‌دار) است و
-    /// «ظرفیت مسیر» نیست — ظرفیت واقعی فقط از پروب خوانده می‌شود.
-    pub probe_kbps: f64,
-    pub at_top: bool,
     pub forwarded_bytes: u64,
     pub forwarded_msgs: u64,
     pub dropped_gops: u64,
@@ -800,19 +598,12 @@ pub struct RelayStats {
 pub struct RelayRuntime {
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<RelayStats>>,
-    ladder: Arc<Mutex<LadderController>>,
+    drain_ema: Arc<Mutex<f64>>,
     queue_bytes: Arc<Mutex<usize>>,
     queue_age: Arc<Mutex<f64>>,
     drain: Arc<Mutex<f64>>,
-    last_probe: Arc<Mutex<f64>>,
-    /// حالت بیت‌ریت ثابت (۰٫۹٫۱۱): false یعنی «بدون تأخیر» (نردبان
-    /// تطبیقی)، true یعنی «بیت‌ریت ثابت» (خط تأخیر ۲٫۵ ثانیه‌ای).
-    /// با AtomicBool است تا پمپ هر تکرار بدون قفل بخواندش و تغییر
-    /// حالت وسط استریم هم همان لحظه اثر کند (بدون ری‌استارت رله).
-    fixed_mode: Arc<AtomicBool>,
-    /// نرخ ورودی Meld (Kbps، میانگین نمایی) — در حالت ثابت، عدد
-    /// «بیت‌ریت خروجی فعلی» پنل و لاگ همین است، نه پله‌ی نردبان
-    /// منجمد.
+    /// نرخ ورودی Meld (Kbps، میانگین نمایی) — عدد «بیت‌ریت
+    /// خروجی فعلی» پنل و لاگ همین است.
     input_kbps: Arc<Mutex<f64>>,
     target_host: Arc<Mutex<String>>,
     last_error: Arc<Mutex<Option<String>>>,
@@ -833,12 +624,10 @@ impl RelayRuntime {
                 dropped_gops: 0,
                 dropped_bytes: 0,
             })),
-            ladder: Arc::new(Mutex::new(LadderController::new(LADDER_DEFAULT_TOP_KBPS))),
+            drain_ema: Arc::new(Mutex::new(0.0)),
             queue_bytes: Arc::new(Mutex::new(0)),
             queue_age: Arc::new(Mutex::new(0.0)),
             drain: Arc::new(Mutex::new(0.0)),
-            last_probe: Arc::new(Mutex::new(0.0)),
-            fixed_mode: Arc::new(AtomicBool::new(false)),
             input_kbps: Arc::new(Mutex::new(0.0)),
             target_host: Arc::new(Mutex::new(String::new())),
             last_error: Arc::new(Mutex::new(None)),
@@ -884,7 +673,7 @@ impl RelayRuntime {
     /// شروع رله. اگر از قبل در حال اجراست، خطا می‌دهد.
     /// توجه: این تابع فقط نخ پمپ را راه می‌اندازد و فوراً برمی‌گردد؛
     /// خطاهای اتصالِ بعدی در last_error وضعیت دیده می‌شوند.
-    pub fn start(&mut self, target_url: &str, stream_key: &str, top_kbps: u32) -> Result<(), String> {
+    pub fn start(&mut self, target_url: &str, stream_key: &str) -> Result<(), String> {
         if self.is_running() {
             return Err("رله از قبل در حال اجراست".to_string());
         }
@@ -898,7 +687,6 @@ impl RelayRuntime {
         }
         *self.last_error.lock().unwrap() = None;
         *self.target_host.lock().unwrap() = host.clone();
-        *self.ladder.lock().unwrap() = LadderController::new(top_kbps.max(LADDER_FLOOR_KBPS));
         self.stream_key = stream_key.to_string();
         self.stop.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
@@ -910,12 +698,10 @@ impl RelayRuntime {
 
         let stop = self.stop.clone();
         let stats = self.stats.clone();
-        let ladder = self.ladder.clone();
+        let drain_ema = self.drain_ema.clone();
         let queue_bytes = self.queue_bytes.clone();
         let queue_age = self.queue_age.clone();
         let drain = self.drain.clone();
-        let last_probe = self.last_probe.clone();
-        let fixed_mode = self.fixed_mode.clone();
         let input_kbps = self.input_kbps.clone();
         let last_error = self.last_error.clone();
         let running = self.running.clone();
@@ -932,12 +718,10 @@ impl RelayRuntime {
                 run_pump(
                     stop,
                     &stats,
-                    &ladder,
                     &queue_bytes,
                     &queue_age,
                     &drain,
-                    &last_probe,
-                    fixed_mode,
+                    &drain_ema,
                     input_kbps,
                     &target,
                     &key,
@@ -970,37 +754,21 @@ impl RelayRuntime {
         self.running.store(false, Ordering::SeqCst);
     }
 
-    /// تغییر حالت رله از پنل (۰٫۹٫۱۱): وسط استریم هم اثر می‌کند،
-    /// چون پمپ هر تکرار پرچم را می‌خواند.
-    pub fn set_fixed_mode(&self, fixed: bool) {
-        self.fixed_mode.store(fixed, Ordering::SeqCst);
-    }
-
     pub fn snapshot(&self) -> RelaySnapshot {
         let st = self.stats.lock().unwrap();
-        let lad = self.ladder.lock().unwrap();
         let uptime = self
             .started_at
             .lock()
             .unwrap()
             .map(|t| t.elapsed().as_secs())
             .unwrap_or(0);
-        let fixed = self.fixed_mode.load(Ordering::SeqCst);
         RelaySnapshot {
             running: self.is_running(),
             target_host: self.target_host.lock().unwrap().clone(),
             listen_addr: "127.0.0.1:1935/live".to_string(),
-            // در حالت ثابت، عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده
-            // است، نه پله‌ی نردبان منجمد.
-            current_kbps: if fixed {
-                *self.input_kbps.lock().unwrap() as u32
-            } else {
-                lad.current_kbps()
-            },
-            fixed_mode: fixed,
-            capacity_ema_kbps: lad.capacity_ema_kbps,
-            probe_kbps: *self.last_probe.lock().unwrap(),
-            at_top: lad.at_top(),
+            // عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده است.
+            current_kbps: *self.input_kbps.lock().unwrap() as u32,
+            capacity_ema_kbps: *self.drain_ema.lock().unwrap(),
             forwarded_bytes: st.forwarded_bytes,
             forwarded_msgs: st.forwarded_msgs,
             dropped_gops: st.dropped_gops,
@@ -1016,27 +784,38 @@ impl RelayRuntime {
 }
 
 // ------------------------------------------------------------- پمپ RTMP
-/// سقف بایت صف خروجی: ۲ مگابایت. این سقف به‌تنهایی تأخیر را مهار
-/// نمی‌کند — تأخیر صف = بایت صف ÷ نرخ واقعی تخلیه، و اگر تخلیه تا
-/// ingest کند شود همان ۲ مگ چند دقیقه تأخیر می‌شود. مهار قطعی تأخیر
-/// با سقف سن است (MAX_QUEUE_AGE): هرچه تخلیه کند باشد، GOP کهنه
-/// دور انداخته می‌شود و فریم تازه جلو می‌آید.
-const MAX_QUEUE_BYTES: usize = 2_000_000;
-/// سقف سن صف: GOP قدیمی‌تر از ۴ ثانیه (از لحظه‌ی رسیدن از Meld)
-/// حتماً دور انداخته می‌شود — تأخیر عبوری از رله از ~۴ ثانیه رد
-/// نمی‌شود، مستقل از اینکه تخلیه‌ی واقعی چقدر کند باشد. سهم ثابت
+/// سقف بایت صف خروجی: ۶ مگابایت (در عمل سقف سن زودتر می‌رسد:
+/// ۶ ثانیه مدیا با نرخ ۵۰۰۰ حدود ۳٫۸ مگابایت است). این سقف فقط
+/// نگهبان حافظه است؛ مهار قطعی تأخیر با سقف سن است.
+const MAX_QUEUE_BYTES: usize = 6_000_000;
+/// خط تأخیر (۰٫۹٫۱۵): پیام فقط وقتی فرستاده می‌شود که دست‌کم
+/// ۲ ثانیه عمر کرده باشد — استریم با ۲ ثانیه تأخیر شروع می‌شود و
+/// نرخ خروجی با نرخ ورودی برابر می‌ماند. خط تأخیر خودش آهنگ را
+/// تنظیم می‌کند، پس نه نردبان لازم است نه سطل توکن.
+const DELAY_LINE: Duration = Duration::from_millis(2000);
+/// سقف سن صف: GOP قدیمی‌تر از ۶ ثانیه (از لحظه‌ی رسیدن از Meld)
+/// حتماً دور انداخته می‌شود — یعنی ۴ ثانیه فضای خالی بالای خط
+/// تأخیر ۲ ثانیه‌ای برای جذب افت‌های مسیر، بدون اینکه تأخیر از
+/// کنترل خارج شود. تأخیر عبوری از رله از ~۶ ثانیه رد نمی‌شود،
+/// مستقل از اینکه تخلیه‌ی واقعی چقدر کند باشد. سهم ثابت
 /// MasterStream از تأخیر پایه جداست و با این سقف کم نمی‌شود.
-const MAX_QUEUE_AGE: Duration = Duration::from_secs(4);
-/// خط تأخیر حالت بیت‌ریت ثابت (۰٫۹٫۱۱): پیام فقط وقتی فرستاده
-/// می‌شود که دست‌کم این‌قدر عمر کرده باشد — تأخیر خروجی حول
-/// ۲٫۵ ثانیه می‌ایستد و نرخ خروجی با نرخ ورودی برابر می‌ماند.
-/// خط تأخیر خودش آهنگ را تنظیم می‌کند، پس در این حالت نه سطل
-/// توکن لازم است نه نردبان.
-const FIXED_DELAY: Duration = Duration::from_millis(2500);
-/// سقف سن صف در حالت ثابت: ۵ ثانیه — ۲٫۵ ثانیه فضای خالی بالای
-/// خط تأخیر برای جذب افت‌های مسیر، بدون اینکه تأخیر از کنترل
-/// خارج شود.
-const FIXED_QUEUE_AGE: Duration = Duration::from_secs(5);
+const QUEUE_AGE_CAP: Duration = Duration::from_secs(6);
+/// سقف تحمل توقفِ نوشتن به ingest (۰٫۹٫۱۵): اگر ingest بیش از
+/// این مدت هیچ بایتی قبول نکند، سشن با خطای صریح تمام می‌شود تا
+/// یک مسیرِ واقعاً مرده، برای همیشه «در حال اجرا» نماند. زیر این
+/// سقف، همان سوکت و همان سشن ادامه پیدا می‌کند (اتصالِ دوباره
+/// نیست) و بعد از برگشتن ingest، فریم‌های تازه ادامه می‌یابند.
+const UPSTREAM_STALL_LIMIT: Duration = Duration::from_secs(120);
+/// آستانه‌ی ثبتِ توقف در لاگ: توقفی که دست‌کم این‌قدر طول بکشد و
+/// بعد رفع شود، یک سطر `# ingest stall recovered` در لاگ می‌گیرد
+/// تا در لاگ بعدی معلوم باشد مسیر خوابیده و برگشته است.
+const UPSTREAM_STALL_NOTE: Duration = Duration::from_secs(10);
+/// هر تکرارِ حلقه‌ی پمپ حداکثر این‌قدر پیام می‌فرستد، بعد حتماً
+/// به بالای حلقه برمی‌گردد تا نمونه‌ی لاگ، سنجش پنجره و سقف سن
+/// مرتب اجرا شوند — حتی وقتی صف هیچ‌وقت خالی نمی‌شود (در حالت
+/// قبلی، حلقه‌ی داخلیِ بی‌سقف می‌توانست نمونه‌های لاگ را برای
+/// ده‌ها دقیقه متوقف کند).
+const SEND_SLICE_MSGS: usize = 128;
 const WINDOW_SECS: f64 = 2.0;
 
 // ------------------------------------------------------------- لاگ رله
@@ -1349,6 +1128,69 @@ fn write_all(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
     stream.write_all(bytes)
 }
 
+/// نوشتن تحمل‌پذیر به ingest (۰٫۹٫۱۵): همان بایت‌ها روی همان
+/// سوکت، تا وقتی که نوشته شوند یا توقف بخورد یا خطای واقعی
+/// بیاید. مکثِ کوتاهِ مسیر (WouldBlock/TimedOut — همان 10060
+/// امشب که سشن‌های یک‌ساعته را می‌کشت) دیگر سشن را تمام نمی‌کند:
+/// تلاش از همان بایتِ ناتمام ادامه پیدا می‌کند، نه از اولِ چانک
+/// و نه با اتصالِ دوباره. فقط توقفِ صریح (Interrupted) یا گذشتنِ
+/// توقف از UPSTREAM_STALL_LIMIT یا قطعِ واقعی (EOF/reset) خطا
+/// برمی‌گرداند. در صورت موفقیت، مدتِ طولانی‌ترین توقفِ تحمل‌شده
+/// (اگر دست‌کم ۱ ثانیه بود) برگردانده می‌شود تا پمپ آن را در لاگ
+/// ثبت کند؛ وگرنه None.
+fn write_all_retry<W: Write>(
+    stream: &mut W,
+    bytes: &[u8],
+    stop: &AtomicBool,
+) -> std::io::Result<Option<Duration>> {
+    let mut done = 0usize;
+    let mut stall_since: Option<Instant> = None;
+    let mut max_stall = Duration::ZERO;
+    while done < bytes.len() {
+        match stream.write(&bytes[done..]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "اتصال بسته شد",
+                ))
+            }
+            Ok(n) => {
+                done += n;
+                if let Some(s) = stall_since.take() {
+                    max_stall = max_stall.max(s.elapsed());
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                if stop.load(Ordering::SeqCst) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "توقف در میانه‌ی ارسال به ingest",
+                    ));
+                }
+                if stall_since.is_none() {
+                    stall_since = Some(Instant::now());
+                }
+                if stall_since.unwrap().elapsed() > UPSTREAM_STALL_LIMIT {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "ارسال به ingest بیش از ۱۲۰ ثانیه متوقف ماند",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if max_stall >= Duration::from_secs(1) {
+        Ok(Some(max_stall))
+    } else {
+        Ok(None)
+    }
+}
+
 /// هندشیک سمت سرور (با Meld): S0+S1+S2 بفرست و C0+C1+C2 را بگیر.
 fn server_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     let mut c0 = [0u8; 1];
@@ -1468,13 +1310,12 @@ fn wait_command_any(
     }
 }
 
-/// حلقه‌ی اصلی پمپ: Meld ←→ ingest مقصد (در عمل MasterStream).
-/// در حالت ثابت، جلوی صف باید به سن خط تأخیر برسد تا فرستاده
-/// شود؛ وگرنه تا رسیدنش (حداکثر ۵۰ms در هر تکرار، تا حلقه قفل
-/// نشود) صبر می‌کنیم. None یعنی قابل ارسال است.
-fn fixed_send_wait(age: Duration) -> Option<Duration> {
-    if age < FIXED_DELAY {
-        Some(std::cmp::min(FIXED_DELAY - age, Duration::from_millis(50)))
+/// خط تأخیر: جلوی صف باید به سن ۲ ثانیه برسد تا فرستاده شود؛
+/// وگرنه تا رسیدنش (حداکثر ۵۰ms در هر تکرار، تا حلقه قفل نشود)
+/// صبر می‌کنیم. None یعنی قابل ارسال است.
+fn delay_send_wait(age: Duration) -> Option<Duration> {
+    if age < DELAY_LINE {
+        Some(std::cmp::min(DELAY_LINE - age, Duration::from_millis(50)))
     } else {
         None
     }
@@ -1502,12 +1343,11 @@ fn run_reader(
     mut meld_conn: ChunkConn,
     queue: &Mutex<OutQueue>,
     stop: &AtomicBool,
-    fixed_mode: &AtomicBool,
     input_kbps: &Mutex<f64>,
 ) -> Result<(), String> {
-    // نرخ ورودی Meld برای نمایش در حالت ثابت (پنجره‌ی ۱ ثانیه‌ای +
-    // میانگین نمایی آلفا ۰٫۴) — فقط نمایش است، آهنگ ارسال در حالت
-    // ثابت با خط تأخیر تنظیم می‌شود، نه با این عدد.
+    // نرخ ورودی Meld برای نمایش (پنجره‌ی ۱ ثانیه‌ای + میانگین
+    // نمایی آلفا ۰٫۴) — فقط نمایش است، آهنگ ارسال با خط تأخیر
+    // تنظیم می‌شود، نه با این عدد.
     let mut rate_start = Instant::now();
     let mut rate_bytes: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
@@ -1536,13 +1376,7 @@ fn run_reader(
                         is_keyframe: is_kf,
                         enqueued_at: Instant::now(),
                     });
-                    // سقف سن حالت‌مند: ثابت ۵ ثانیه، بدون تأخیر ۴ ثانیه.
-                    let cap = if fixed_mode.load(Ordering::SeqCst) {
-                        FIXED_QUEUE_AGE
-                    } else {
-                        MAX_QUEUE_AGE
-                    };
-                    q.enforce_age(Instant::now(), cap);
+                    q.enforce_age(Instant::now(), QUEUE_AGE_CAP);
                 }
                 _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
             },
@@ -1564,12 +1398,10 @@ fn run_reader(
 fn run_pump(
     stop: Arc<AtomicBool>,
     stats: &Mutex<RelayStats>,
-    ladder: &Mutex<LadderController>,
     queue_bytes: &Mutex<usize>,
     queue_age: &Mutex<f64>,
     drain: &Mutex<f64>,
-    last_probe: &Mutex<f64>,
-    fixed_mode: Arc<AtomicBool>,
+    drain_ema: &Mutex<f64>,
     input_kbps: Arc<Mutex<f64>>,
     target_url: &str,
     stream_key: &str,
@@ -1746,16 +1578,9 @@ fn run_pump(
         .set_read_timeout(Some(Duration::from_millis(200)))
         .map_err(|e| e.to_string())?;
 
-    // حلقه‌ی پمپ با سطل توکن، فیلتر GOP و پنجره‌های پروب.
-    // پروب چرا لازم است؟ در پنجره‌ی عادی، drain اندازه‌گیری‌شده با سطل
-    // توکن به نرخ پله‌ی جاری سقف گرفته شده، پس هرگز از پله‌ی بالاتر
-    // بیشتر نمی‌شود و شرط بالارفتن هیچ‌وقت برقرار نمی‌شود — نردبان
-    // بعد از هر پایین‌آمدن برای همیشه پایین می‌ماند. پس هر ۵ پنجره،
-    // یک پنجره‌ی پروب بدون سقف اجرا می‌شود (فقط وقتی پنجره‌ی قبلی نشان
-    // داده باشد مسیر دارد با پله‌ی جاری همراهی می‌کند، تا وسط تراکم
-    // پروب باعث افت اضافه نشود) و بالارفتن فقط از روی پروب تصمیم
-    // گرفته می‌شود. سقف پروب را TCP و نرخ ورودی Meld تعیین می‌کنند،
-    // نه سطل توکن.
+    // حلقه‌ی پمپ تک‌حالته (۰٫۹٫۱۵): فقط خط تأخیر ۲ ثانیه‌ای و
+    // فیلتر GOP — بدون نردبان، بدون سطل توکن، بدون پروب. نرخ
+    // خروجی همان نرخ ورودی است.
     // سطر شروع سشن در لاگ (بدون کلید استریم — target_url فقط
     // آدرس و اپ دارد). نسخه از CARGO_PKG_VERSION می‌آید تا همیشه
     // با خود باینری هم‌گام باشد.
@@ -1769,11 +1594,8 @@ fn run_pump(
         ),
     );
     let queue = Arc::new(Mutex::new(OutQueue::new(MAX_QUEUE_BYTES)));
-    let mut bucket = TokenBucket::new(ladder.lock().unwrap().current_kbps() as f64);
     let mut window_start = Instant::now();
     let mut window_bytes: u64 = 0;
-    let mut window_index: u64 = 0;
-    let mut probe_active = false;
     let pump_start = Instant::now();
     let mut last_log = pump_start;
 
@@ -1789,27 +1611,13 @@ fn run_pump(
     let reader_handle = {
         let reader_queue = queue.clone();
         let reader_stop = stop.clone();
-        let reader_fixed = fixed_mode.clone();
         let reader_input = input_kbps.clone();
         std::thread::spawn(move || {
-            run_reader(
-                meld_conn,
-                &reader_queue,
-                &reader_stop,
-                &reader_fixed,
-                &reader_input,
-            )
+            run_reader(meld_conn, &reader_queue, &reader_stop, &reader_input)
         })
     };
     'pump: while !stop.load(Ordering::SeqCst) {
-        // حالت هر تکرار خوانده می‌شود تا تغییر وسط استریم همان
-        // لحظه اثر کند (بدون ری‌استارت رله).
-        let fixed = fixed_mode.load(Ordering::SeqCst);
-        let age_cap = if fixed {
-            FIXED_QUEUE_AGE
-        } else {
-            MAX_QUEUE_AGE
-        };
+        let age_cap = QUEUE_AGE_CAP;
         // سقف سن صف روی pop هم — GOPای که موقع بلاک‌شدن write
         // کهنه شده باشد نباید به‌عنوان مدیای تازه فرستاده شود.
         let (q_bytes, q_age, d_gops, d_bytes) = {
@@ -1837,26 +1645,17 @@ fn run_pump(
         // Mutexهایی که فرانت می‌خواند — پس لاگ و پنل یکی‌اند.
         if last_log.elapsed() >= RELAY_LOG_INTERVAL {
             last_log = Instant::now();
-            // در حالت ثابت، عدد خروجی همان نرخ ورودی است، نه پله‌ی
-            // نردبان منجمد.
-            let (cur, ema) = {
-                let lad = ladder.lock().unwrap();
-                (
-                    if fixed {
-                        *input_kbps.lock().unwrap() as u32
-                    } else {
-                        lad.current_kbps()
-                    },
-                    lad.capacity_ema_kbps,
-                )
-            };
+            // عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده است؛
+            // میانگین تخلیه هم میانگین نمایی پنجره‌های ۲ ثانیه‌ای.
+            let cur = *input_kbps.lock().unwrap() as u32;
+            let ema = *drain_ema.lock().unwrap();
             let st = stats.lock().unwrap();
             let line = format_log_sample(
                 unix_now(),
                 pump_start.elapsed().as_secs(),
                 cur,
                 ema,
-                *last_probe.lock().unwrap(),
+                0.0, // ستون پروب در ۰٫۹٫۱۵ بازنشسته شد؛ برای سازگاری قالب لاگ صفر می‌ماند.
                 *queue_bytes.lock().unwrap(),
                 *queue_age.lock().unwrap(),
                 *drain.lock().unwrap(),
@@ -1868,59 +1667,72 @@ fn run_pump(
             );
             append_log_line(log_path, &line);
         }
-        // حالت ثابت: جلوی صف باید به سن خط تأخیر برسد تا فرستاده
+        // خط تأخیر: جلوی صف باید به سن ۲ ثانیه برسد تا فرستاده
         // شود؛ وگرنه تا رسیدنش صبر می‌کنیم (بیرون از قفل، تا
         // خواننده گیر نکند) و این تکرار را بدون ارسال تمام می‌کنیم.
-        // در این حالت سطل توکن کنار گذاشته می‌شود — خط تأخیر خودش
-        // آهنگ را تنظیم می‌کند.
-        if fixed {
+        // خط تأخیر خودش آهنگ را تنظیم می‌کند.
+        {
             let wait = {
                 let q = queue.lock().unwrap();
-                q.msgs.front().and_then(|f| {
-                    fixed_send_wait(Instant::now().duration_since(f.enqueued_at))
-                })
+                q.msgs
+                    .front()
+                    .and_then(|f| delay_send_wait(Instant::now().duration_since(f.enqueued_at)))
             };
             if let Some(d) = wait {
                 std::thread::sleep(d);
             }
         }
-        // ارسال: در پنجره‌ی پروب بدون سقف، وگرنه تا جایی که توکن هست.
-        // قانون طلایی: قفل صف هرگز روی write نگه داشته نمی‌شود —
-        // اول pop زیر قفل، بعد unlock، بعد encode + write.
+        // ارسال: قانون طلایی: قفل صف هرگز روی write نگه داشته
+        // نمی‌شود — اول pop زیر قفل، بعد unlock، بعد encode + write.
+        // هر تکرار حداکثر SEND_SLICE_MSGS پیام می‌فرستد تا نمونه‌ی
+        // لاگ و سنجش پنجره مرتب اجرا شوند.
+        let mut sent_this_pass = 0usize;
         loop {
-            if fixed {
-                // اگر جلوی صف هنوز جوان است، این تکرار چیزی
-                // نمی‌فرستد (صبرش بالاتر انجام شد).
-                let young = {
-                    let q = queue.lock().unwrap();
-                    q.msgs
-                        .front()
-                        .map(|f| {
-                            Instant::now().duration_since(f.enqueued_at) < FIXED_DELAY
-                        })
-                        .unwrap_or(false)
-                };
-                if young {
-                    break;
-                }
+            if sent_this_pass >= SEND_SLICE_MSGS {
+                break;
+            }
+            // اگر جلوی صف هنوز جوان است، این تکرار چیزی نمی‌فرستد
+            // (صبرش بالاتر انجام شد).
+            let young = {
+                let q = queue.lock().unwrap();
+                q.msgs
+                    .front()
+                    .map(|f| Instant::now().duration_since(f.enqueued_at) < DELAY_LINE)
+                    .unwrap_or(false)
+            };
+            if young {
+                break;
             }
             let m = {
                 let mut q = queue.lock().unwrap();
-                let Some(need) = q.msgs.front().map(|f| f.payload.len()) else {
+                let Some(_) = q.msgs.front() else {
                     break;
                 };
-                if !fixed && !probe_active && !bucket.try_take(need) {
-                    break;
-                }
                 let m = q.msgs.pop_front().unwrap();
                 q.bytes = q.bytes.saturating_sub(m.payload.len());
                 m
             };
             let chunk = encode_message(m.msg_type, m.timestamp, up_stream_id, &m.payload);
-            if let Err(e) = write_all(&mut up_conn.stream, &chunk) {
-                pump_res = Err(format!("ارسال به ingest قطع شد: {e}"));
-                break 'pump;
+            match write_all_retry(&mut up_conn.stream, &chunk, &stop) {
+                Ok(Some(stall)) if stall >= UPSTREAM_STALL_NOTE => {
+                    append_log_line(
+                        log_path,
+                        &format!("# ingest stall recovered after {}s", stall.as_secs()),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    // توقفِ زده‌شده وسطِ نوشتنِ تحمل‌پذیر، پایانِ
+                    // تمیز است، نه خطا.
+                    if !(e.kind() == std::io::ErrorKind::Interrupted
+                        && stop.load(Ordering::SeqCst))
+                    {
+                        pump_res = Err(format!("ارسال به ingest قطع شد: {e}"));
+                    }
+                    break 'pump;
+                }
             }
+            sent_this_pass += 1;
             window_bytes += chunk.len() as u64;
             let mut st = stats.lock().unwrap();
             st.forwarded_bytes += chunk.len() as u64;
@@ -1933,60 +1745,25 @@ fn run_pump(
         if window_start.elapsed().as_secs_f64() >= WINDOW_SECS {
             let elapsed = window_start.elapsed().as_secs_f64().max(0.1);
             let drain_kbps = window_bytes as f64 * 8.0 / 1000.0 / elapsed;
-            // نرخ واقعی تخلیه‌ی همین پنجره (هر ۲ ثانیه تازه می‌شود) —
-            // در پنجره‌ی عادی سقف‌دار همان نرخ پله است و در پروب همان
-            // ظرفیت مسیر؛ هر دو برای تشخیص گلوگاه در پنل لازم‌اند.
+            // نرخ واقعی تخلیه‌ی همین پنجره (هر ۲ ثانیه تازه
+            // می‌شود) + میانگین نمایی آن با آلفای ۰٫۴ برای پنل و لاگ.
             *drain.lock().unwrap() = drain_kbps;
+            {
+                let mut ema = drain_ema.lock().unwrap();
+                if *ema <= 0.0 {
+                    *ema = drain_kbps;
+                } else {
+                    *ema = 0.4 * drain_kbps + 0.6 * *ema;
+                }
+            }
             window_bytes = 0;
             window_start = Instant::now();
-            window_index += 1;
-            let mut lad = ladder.lock().unwrap();
-            if fixed {
-                // نردبان منجمد است؛ فقط میانگین تخلیه تازه می‌شود
-                // تا پنل و لاگ عدد معنادار نشان بدهند.
-                lad.note_drain_only(drain_kbps);
-            } else if probe_active {
-                probe_active = false;
-                *last_probe.lock().unwrap() = drain_kbps;
-                let before = lad.current_kbps();
-                let decision = lad.note_probe(drain_kbps);
-                if lad.current_kbps() != before {
-                    bucket.set_rate(lad.current_kbps() as f64);
-                    let _ = decision;
-                }
-            } else {
-                let before = lad.current_kbps();
-                let decision = lad.note_capacity(drain_kbps);
-                if lad.current_kbps() != before {
-                    bucket.set_rate(lad.current_kbps() as f64);
-                    let _ = decision;
-                }
-                // پروب بعدی: هر ۵ پنجره، فقط وقتی در سقف نیستیم و
-                // پنجره‌ی قبلی نشان داده مسیر با پله‌ی جاری همراه است.
-                if lad.idx > 0
-                    && window_index % 5 == 4
-                    && drain_kbps >= lad.current_kbps() as f64 * 0.95
-                {
-                    probe_active = true;
-                }
-            }
         }
-        // اگر چیزی برای ارسال نیست و توکن هم نیست، کمی صبر کن تا
-        // حلقه CPU را اشغال نکند. در پنجره‌ی پروب صبر نمی‌کنیم تا
-        // drain واقعی سوکت سنجیده شود.
-        let (is_empty, front_len) = {
-            let q = queue.lock().unwrap();
-            (q.msgs.is_empty(), q.msgs.front().map(|f| f.payload.len()))
-        };
-        if is_empty {
+        // اگر چیزی برای ارسال نیست، کمی صبر کن تا حلقه CPU را
+        // اشغال نکند. وقتی جلوی صف جوان است، صبرِ خط تأخیر در
+        // بالای حلقه انجام شده است.
+        if queue.lock().unwrap().msgs.is_empty() {
             std::thread::sleep(Duration::from_millis(5));
-        } else if !probe_active {
-            if let Some(len) = front_len {
-                let wait = bucket.wait_ms(len);
-                if wait > 0 {
-                    std::thread::sleep(Duration::from_millis(wait.min(50)));
-                }
-            }
         }
     }
     // خطای پمپ هم خواننده را متوقف می‌کند؛ خواننده حداکثر تا
@@ -2008,116 +1785,6 @@ fn run_pump(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ladder_steps_down_after_two_bad_windows() {
-        let mut l = LadderController::new(8000);
-        assert_eq!(l.current_kbps(), 8000);
-        assert_eq!(l.note_capacity(4000.0), RelayDecision::Hold);
-        assert_eq!(l.note_capacity(4000.0), RelayDecision::StepDown);
-        assert_eq!(l.current_kbps(), 6000);
-    }
-
-    #[test]
-    fn ladder_capacity_window_never_steps_up() {
-        // رگرسیون باگ بحرانی ۰٫۹٫۳: پنجره‌ی عادی (drain سقف‌دار) هرگز
-        // نباید صعود بدهد — صعود فقط کار پروب است. حتی با ۲۰ پنجره‌ی
-        // «خوب» در ۶۰۰۰، نردبان باید همان‌جا بماند.
-        let mut l = LadderController::new(8000);
-        l.note_capacity(4000.0);
-        l.note_capacity(4000.0); // رفت روی ۶۰۰۰
-        assert_eq!(l.current_kbps(), 6000);
-        for _ in 0..20 {
-            assert_eq!(l.note_capacity(9000.0), RelayDecision::Hold);
-        }
-        assert_eq!(l.current_kbps(), 6000);
-    }
-
-    #[test]
-    fn ladder_probe_steps_up_on_two_of_last_three() {
-        let mut l = LadderController::new(8000);
-        l.note_capacity(4000.0);
-        l.note_capacity(4000.0); // رفت روی ۶۰۰۰
-        assert_eq!(l.current_kbps(), 6000);
-        // آستانه‌ی صعود ۸۰۰۰×۱٫۰۵=۸۴۰۰ است؛ پنجره‌ی ناقص (کمتر از
-        // ۳ پروب) صعود نمی‌دهد، ولی پنجره‌ی کامل با ۳تای خوب می‌دهد.
-        assert_eq!(l.note_probe(8800.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::StepUp);
-        assert_eq!(l.current_kbps(), 8000);
-    }
-
-    #[test]
-    fn ladder_probe_single_bad_probe_does_not_block_climb() {
-        // قانون میانه‌ای ۰٫۹٫۸: یک پروب بد وسط پنجره، صعود را خراب
-        // نمی‌کند — برخلاف قانون پیاپی قبلی که شمارنده را صفر می‌کرد.
-        let mut l = LadderController::new(8000);
-        l.note_capacity(4000.0);
-        l.note_capacity(4000.0);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(5000.0), RelayDecision::StepUp);
-        assert_eq!(l.current_kbps(), 8000);
-    }
-
-    #[test]
-    fn ladder_probe_two_bad_probes_block_climb() {
-        // ولی دو پروب بد در پنجره‌ی ۳تایی، صعود را می‌گیرد.
-        let mut l = LadderController::new(8000);
-        l.note_capacity(4000.0);
-        l.note_capacity(4000.0);
-        assert_eq!(l.note_probe(9000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(5000.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(5000.0), RelayDecision::Hold);
-        assert_eq!(l.current_kbps(), 6000);
-    }
-
-    #[test]
-    fn ladder_climbs_on_real_097_log_probes() {
-        // رگرسیون لاگ ۰٫۹٫۷: نردبان روی کف ۱۵۰۰ با پروب‌های
-        // ۲۳۷۳، ۲۰۲۷، ۲۸۶۱، ۲۰۲۱، ۲۸۵۱، ۲۱۳۰، ۲۵۸۴، ۳۰۲۴.
-        // آستانه‌ی صعود به ۲۵۰۰ برابر ۲۵۰۰×۱٫۰۵=۲۶۲۵ است؛ قانون
-        // قبلی (۳ پیاپی بالای ۲۷۵۰) هیچ‌وقت صعود نمی‌داد، قانون
-        // تازه دقیقاً در پروب پنجم (۲۸۵۱) صعود می‌دهد و بعد روی
-        // ۲۵۰۰ می‌ماند (آستانه‌ی ۴۰۰۰×۱٫۰۵=۴۲۰۰ دست‌نیافتنی است).
-        let mut l = LadderController::new(8000);
-        l.idx = 5; // پله‌ی ۱۵۰۰ (با پله‌ی ۵۰۰۰، اندیس‌ها یکی جابه‌جا شدند)
-        assert_eq!(l.current_kbps(), 1500);
-        assert_eq!(l.note_probe(2373.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(2027.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(2861.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(2021.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(2851.0), RelayDecision::StepUp);
-        assert_eq!(l.current_kbps(), 2500);
-        assert_eq!(l.note_probe(2130.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(2584.0), RelayDecision::Hold);
-        assert_eq!(l.note_probe(3024.0), RelayDecision::Hold);
-        assert_eq!(l.current_kbps(), 2500);
-    }
-
-    #[test]
-    fn ladder_never_goes_below_floor() {
-        let mut l = LadderController::new(8000);
-        for _ in 0..20 {
-            l.note_capacity(100.0);
-        }
-        assert_eq!(l.current_kbps(), 1500);
-    }
-
-    #[test]
-    fn ladder_top_clamps_to_settings() {
-        let l = LadderController::new(4000);
-        assert_eq!(l.rungs[0], 4000);
-        assert_eq!(l.current_kbps(), 4000);
-    }
-
-    #[test]
-    fn token_bucket_refills_and_caps() {
-        let mut b = TokenBucket::new(8000.0);
-        assert!(!b.try_take(1_000_000));
-        std::thread::sleep(Duration::from_millis(120));
-        assert!(b.try_take(50_000));
-    }
 
     #[test]
     fn keyframe_detection() {
@@ -2169,19 +1836,9 @@ mod tests {
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, MAX_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q.dropped_gops, 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
-    }
-
-    #[test]
-    fn ladder_has_5000_rung() {
-        // پله‌ی ۵۰۰۰ (۰٫۹٫۹): بین ۶۰۰۰ و ۴۰۰۰ می‌نشیند تا وقتی
-        // مسیر حول ۵۰۰۰ است، نردبان روی ۴۰۰۰ قفل نماند.
-        assert_eq!(
-            LadderController::new(8000).rungs,
-            vec![8000, 6000, 5000, 4000, 2500, 1500]
-        );
     }
 
     #[test]
@@ -2208,11 +1865,11 @@ mod tests {
         let now = Instant::now();
         let old = now - Duration::from_secs(10);
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
-        q.enforce_age(now, MAX_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
-        q.enforce_age(now, MAX_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, MAX_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q.dropped_gops, 1);
         assert_eq!(q.msgs.len(), 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
@@ -2243,50 +1900,88 @@ mod tests {
     }
 
     #[test]
-    fn fixed_send_wait_holds_until_delay_line() {
-        // ۰٫۹٫۱۱: پیام جوان‌تر از ۲٫۵ ثانیه صبر می‌کند (حداکثر
-        // ۵۰ms در هر تکرار) و پیام به‌سن‌رسیده بی‌درنگ می‌رود.
+    fn delay_line_is_two_seconds() {
+        // ۰٫۹٫۱۵: خط تأخیر دقیقاً ۲ ثانیه است — پیام جوان‌تر صبر
+        // می‌کند (حداکثر ۵۰ms در هر تکرار) و پیام به‌سن‌رسیده
+        // بی‌درنگ می‌رود.
+        assert_eq!(DELAY_LINE, Duration::from_millis(2000));
         assert_eq!(
-            fixed_send_wait(Duration::from_secs(0)),
+            delay_send_wait(Duration::from_secs(0)),
             Some(Duration::from_millis(50))
         );
         assert_eq!(
-            fixed_send_wait(Duration::from_millis(2480)),
+            delay_send_wait(Duration::from_millis(1980)),
             Some(Duration::from_millis(20))
         );
-        assert_eq!(fixed_send_wait(Duration::from_millis(2500)), None);
-        assert_eq!(fixed_send_wait(Duration::from_secs(3)), None);
+        assert_eq!(delay_send_wait(Duration::from_millis(2000)), None);
+        assert_eq!(delay_send_wait(Duration::from_secs(3)), None);
     }
 
     #[test]
-    fn note_drain_only_moves_ema_without_steps() {
-        // ۰٫۹٫۱۱: در حالت ثابت، میانگین تخلیه تازه می‌شود ولی
-        // پله تکان نمی‌خورد.
-        let mut l = LadderController::new(8000);
-        l.note_drain_only(4000.0);
-        assert_eq!(l.capacity_ema_kbps, 4000.0);
-        assert_eq!(l.current_kbps(), 8000);
-        l.note_drain_only(2000.0);
-        assert_eq!(l.capacity_ema_kbps, 0.4 * 2000.0 + 0.6 * 4000.0);
-        assert_eq!(l.current_kbps(), 8000);
-    }
-
-    #[test]
-    fn queue_age_cap_is_mode_dependent() {
-        // ۰٫۹٫۱۱: GOP با عمر ۴٫۵ ثانیه زیر سقف ۴ ثانیه‌ای (بدون
-        // تأخیر) می‌رود ولی زیر سقف ۵ ثانیه‌ای (ثابت) می‌ماند.
+    fn queue_age_cap_is_six_seconds() {
+        // ۰٫۹٫۱۵: سقف سن ۶ ثانیه است — GOP با عمر ۵٫۵ ثانیه
+        // می‌ماند، GOP با عمر ۶٫۵ ثانیه می‌رود.
         let now = Instant::now();
-        let old = now - Duration::from_millis(4500);
         let mut q = OutQueue::new(1_000_000);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(5500) });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(5500) });
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, FIXED_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q.dropped_gops, 0);
         assert_eq!(q.msgs.len(), 3);
-        q.enforce_age(now, MAX_QUEUE_AGE);
-        assert_eq!(q.dropped_gops, 1);
-        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+        let mut q2 = OutQueue::new(1_000_000);
+        q2.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(6500) });
+        q2.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(6500) });
+        q2.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
+        q2.enforce_age(now, QUEUE_AGE_CAP);
+        assert_eq!(q2.dropped_gops, 1);
+        assert_eq!(q2.msgs.front().unwrap().timestamp, 99);
+    }
+
+    /// نویسنده‌ی ساختگی برای آزمون write_all_retry: چند بار
+    /// TimedOut برمی‌گرداند، بعد بایت‌ها را می‌نویسد.
+    struct FlakyWriter {
+        fails_left: usize,
+        written: Vec<u8>,
+    }
+
+    impl Write for FlakyWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.fails_left > 0 {
+                self.fails_left -= 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "stall ساختگی",
+                ));
+            }
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn upstream_write_retries_timed_out_chunks() {
+        // ۰٫۹٫۱۵: مکثِ مسیر، همان بایت‌ها را از همان‌جا ادامه
+        // می‌دهد — نه خطا، نه از اول.
+        let stop = AtomicBool::new(false);
+        let mut w = FlakyWriter { fails_left: 3, written: Vec::new() };
+        let res = write_all_retry(&mut w, b"hello-ingest", &stop).unwrap();
+        assert_eq!(w.written, b"hello-ingest");
+        assert!(res.is_none()); // توقف‌ها زیر ۱ ثانیه بودند
+    }
+
+    #[test]
+    fn upstream_write_stops_when_flag_set() {
+        // ۰٫۹٫۱۵: توقفِ صریح وسطِ مکث، Interrupted می‌دهد تا
+        // پمپ پایانِ تمیز ثبت کند، نه خطا.
+        let stop = AtomicBool::new(true);
+        let mut w = FlakyWriter { fails_left: 100, written: Vec::new() };
+        let err = write_all_retry(&mut w, b"hello", &stop).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
     }
 
     #[test]
@@ -2296,7 +1991,7 @@ mod tests {
         let mut q = OutQueue::new(1_000_000);
         let now = Instant::now();
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_secs(60) });
-        q.enforce_age(now, MAX_QUEUE_AGE);
+        q.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q.dropped_gops, 0);
         assert_eq!(q.msgs.len(), 1);
     }

@@ -52,14 +52,14 @@ let settings = loadSettings();
 // رشته‌های رابط — فارسی از lang.py نسخه‌ی پایتون؛ انگلیسی هم همان‌جا هست.
 const STRINGS = {
   fa: {
-    subtitle: "رله‌ی تطبیقی RTMP برای استریم",
+    subtitle: "رله‌ی RTMP برای استریم",
     ping_label: "پینگ سرور",
     nav_scan: "اسکن سرورها",
-    nav_relay: "رله‌ی تطبیقی",
+    nav_relay: "رله",
     nav_guide: "راهنما",
     nav_settings: "تنظیمات",
-    relay_title: "رله‌ی تطبیقی RTMP",
-    relay_hint: "وقتی بیت‌ریت شبکه نوسان دارد، ارسال مستقیم Meld به سرور مقصد باعث جمع‌شدن صف و رشد تأخیر می‌شود. رله استریم را روی همین سیستم تحویل می‌گیرد، ظرفیت واقعی مسیر تا سرور مقصد را می‌سنجد و بیت‌ریت خروجی را تطبیقی تنظیم می‌کند؛ به‌جای رشد تأخیر، فقط کمی فریم‌ریت کم می‌شود.",
+    relay_title: "رله‌ی RTMP",
+    relay_hint: "رله استریم Meld را روی همین سیستم تحویل می‌گیرد و با ۲ ثانیه تأخیر و همان بیت‌ریت ورودی به سرور مقصد می‌فرستد؛ نوسان‌های کوتاه مسیر با بافر جذب می‌شوند و فقط وقتی مسیر برای مدت طولانی عقب بماند، کمی فریم‌ریت کم می‌شود.",
     relay_setup_title: "⚙ راه‌اندازی (یک بار)",
     relay_step1: "از داشبورد سرویس مقصد (مثلاً MasterStream) آدرس RTMP و کلید استریم را بردار و پایین وارد کن.",
     relay_step2: "دکمه‌ی «شروع رله» را بزن.",
@@ -71,26 +71,20 @@ const STRINGS = {
     relay_target_ph: "rtmp://live-ingest.example.com/live",
     relay_key: "کلید استریم مقصد",
     relay_key_ph: "••••••••",
-    relay_top: "سقف بیت‌ریت (Mbps)",
     relay_key_note: "کلید فقط روی همین دستگاه می‌ماند (در حافظه‌ی برنامه و حافظه‌ی محلی مرورگر داخلی)؛ هرگز به سرور یا جایی فرستاده نمی‌شود و در لاگ هم نمی‌آید.",
     relay_start: "▶ شروع رله",
     relay_stop: "⏹ توقف رله",
-    relay_mode_label: "حالت رله:",
-    relay_mode_zero: "بدون تأخیر",
-    relay_mode_fixed: "بیت‌ریت ثابت (۲–۳ ثانیه تأخیر)",
     relay_status_title: "📊 وضعیت زنده",
     relay_state_label: "وضعیت:",
     relay_host_label: "مقصد:",
     relay_rung_label: "بیت‌ریت خروجی فعلی:",
     relay_cap_label: "میانگین نرخ تخلیه:",
-    relay_probe_label: "نتیجه‌ی آخرین پروب:",
     relay_stats_label: "ارسال‌شده / GOP حذف‌شده / صف / سن صف / تخلیه:",
     relay_log_label: "فایل لاگ (هر ۵ ثانیه یک نمونه؛ برای فرستادن به پشتیبانی):",
     relay_failsafe: "اگر رله وسط استریم متوقف شود، استریم هم قطع می‌شود؛ برای برگشت فوری، خروجی Meld را به حالت مستقیم برگردان.",
     guide_title: "📖 راهنمای LagSlice",
     relay_running: "در حال اجرا ✅",
     relay_stopped: "متوقف",
-    relay_at_top: "سقف",
     relay_started: "رله شروع شد — حالا در Meld خروجی Custom RTMP را استارت بزن.",
     relay_stopped_msg: "رله متوقف شد.",
     relay_err_url: "آدرس مقصد باید با rtmp:// شروع شود.",
@@ -170,14 +164,14 @@ const STRINGS = {
     upd_bad_file: "این فایل بسته‌ی آپدیت معتبر LagSlice نیست.",
   },
   en: {
-    subtitle: "Adaptive RTMP relay for streaming",
+    subtitle: "RTMP relay for streaming",
     ping_label: "Server ping",
     nav_scan: "Server scan",
-    nav_relay: "Adaptive relay",
+    nav_relay: "Relay",
     nav_guide: "Guide",
     nav_settings: "Settings",
-    relay_title: "Adaptive RTMP relay",
-    relay_hint: "When network bitrate fluctuates, sending directly from Meld to the destination server queues frames up and delay grows. The relay takes the stream on this same machine, measures the real path capacity to the destination, and adapts the output bitrate — instead of growing delay, you only lose a little frame rate.",
+    relay_title: "RTMP relay",
+    relay_hint: "The relay takes Meld's stream on this same machine and forwards it to the destination server with a 2-second delay at the same input bitrate; short path dips are absorbed by the buffer, and only a long-lasting lag costs a little frame rate.",
     relay_setup_title: "⚙ Setup (once)",
     relay_step1: "Copy the RTMP URL and stream key from your destination service dashboard (e.g. MasterStream) and enter them below.",
     relay_step2: "Press “Start relay”.",
@@ -189,26 +183,20 @@ const STRINGS = {
     relay_target_ph: "rtmp://live-ingest.example.com/live",
     relay_key: "Destination stream key",
     relay_key_ph: "••••••••",
-    relay_top: "Bitrate cap (Mbps)",
     relay_key_note: "The key stays on this machine only (app memory + the embedded browser's local storage); it is never sent anywhere and never logged.",
     relay_start: "▶ Start relay",
     relay_stop: "⏹ Stop relay",
-    relay_mode_label: "Relay mode:",
-    relay_mode_zero: "Zero delay",
-    relay_mode_fixed: "Fixed bitrate (2–3s delay)",
     relay_status_title: "📊 Live status",
     relay_state_label: "Status:",
     relay_host_label: "Target:",
     relay_rung_label: "Current output bitrate:",
     relay_cap_label: "Avg drain rate:",
-    relay_probe_label: "Last probe result:",
     relay_stats_label: "Sent / GOPs dropped / queue / queue age / drain:",
     relay_log_label: "Log file (one sample every 5s; send it for analysis):",
     relay_failsafe: "If the relay stops mid-stream, the stream stops too; to recover instantly, switch Meld back to direct output.",
     guide_title: "📖 LagSlice guide",
     relay_running: "Running ✅",
     relay_stopped: "Stopped",
-    relay_at_top: "cap",
     relay_started: "Relay started — now start the Custom RTMP output in Meld.",
     relay_stopped_msg: "Relay stopped.",
     relay_err_url: "The destination URL must start with rtmp://.",
@@ -332,31 +320,13 @@ document.getElementById("navRelay").addEventListener("click", () => showView("re
 document.getElementById("navGuide").addEventListener("click", () => showView("guide"));
 document.getElementById("navSettings").addEventListener("click", () => showView("settings"));
 
-// ---------- رله‌ی تطبیقی: شروع/توقف + وضعیت زنده (پولینگ ۲ ثانیه‌ای) ----------
+// ---------- رله: شروع/توقف + وضعیت زنده (پولینگ ۲ ثانیه‌ای) ----------
 const RELAY_TARGET_KEY = "lagslice.relayTarget";
-const RELAY_MODE_KEY = "lagslice.relayMode";
 let relayTimer = null;
 let relayRunning = false;
 
-// حالت رله (۰٫۹٫۱۱): انتخاب‌گر پنل، با حافظه‌ی محلی می‌ماند؛
-// بک‌اند با همین مقدار هم‌گام می‌شود (پیش از استارت و با هر
-// تغییر وسط استریم — پمپ هر تکرار پرچم را می‌خواند).
-function relayModeFixed() {
-  return document.getElementById("relayMode").value === "fixed";
-}
-
-async function applyRelayMode() {
-  try {
-    await invoke("relay_set_mode", { fixed: relayModeFixed() });
-  } catch {}
-}
-
-function loadRelayMode() {
-  try {
-    const m = localStorage.getItem(RELAY_MODE_KEY);
-    if (m === "fixed" || m === "zero") document.getElementById("relayMode").value = m;
-  } catch {}
-}
+// رله تک‌حالته است (۰٫۹٫۱۵): خط تأخیر ۲ ثانیه‌ای + بیت‌ریت ثابت —
+// انتخاب‌گر حالت ندارد.
 
 function loadRelayTarget() {
   try {
@@ -366,7 +336,6 @@ function loadRelayTarget() {
       if (d && typeof d === "object") {
         if (d.url) document.getElementById("relayTarget").value = d.url;
         if (d.key) document.getElementById("relayKey").value = d.key;
-        if (d.top) document.getElementById("relayTop").value = d.top;
       }
     }
   } catch {}
@@ -377,24 +346,15 @@ function renderRelayStatus(s) {
   document.getElementById("relayState").textContent = s.running
     ? t("relay_running")
     : t("relay_stopped");
-  // هم‌گام‌سازی انتخاب‌گر حالت با وضعیت واقعی — فقط وقتی در حال
-  // اجراست، تا انتخابِ پیش از استارت با مقدار پیش‌فرض بک‌اند
-  // (بدون تأخیر) بازنویسی نشود.
-  if (s.running) {
-    document.getElementById("relayMode").value = s.fixed_mode ? "fixed" : "zero";
-  }
   // هاست واقعی مقصد (از آدرس واردشده) — برچسب همیشه درست است،
   // چه مقصد MasterStream باشد چه هر سرویس RTMP دیگر.
   const hostEl = document.getElementById("relayTargetHost");
   if (hostEl) hostEl.textContent = s.running ? s.target_host : "—";
   document.getElementById("relayRung").textContent = s.running
-    ? s.current_kbps + " Kbps" + (s.at_top ? " (" + t("relay_at_top") + ")" : "")
+    ? s.current_kbps + " Kbps"
     : "—";
   document.getElementById("relayCap").textContent = s.running
     ? Math.round(s.capacity_ema_kbps) + " Kbps"
-    : "—";
-  document.getElementById("relayProbe").textContent = s.running && s.probe_kbps > 0
-    ? Math.round(s.probe_kbps) + " Kbps"
     : "—";
   document.getElementById("relayStats").textContent = s.running
     ? fmtMB(s.forwarded_bytes) + " / " + s.dropped_gops + " GOP / " + Math.round(s.queue_bytes / 1024) + " KB / " + s.queue_age_secs.toFixed(1) + "s / " + Math.round(s.drain_kbps) + " Kbps"
@@ -431,17 +391,9 @@ async function pollRelayStatus() {
   }
 }
 
-document.getElementById("relayMode").addEventListener("change", async () => {
-  try {
-    localStorage.setItem(RELAY_MODE_KEY, document.getElementById("relayMode").value);
-  } catch {}
-  await applyRelayMode();
-});
-
 document.getElementById("relayStart").addEventListener("click", async () => {
   const url = document.getElementById("relayTarget").value.trim();
   const key = document.getElementById("relayKey").value;
-  const topMbps = parseFloat(document.getElementById("relayTop").value);
   if (!url.startsWith("rtmp://")) {
     document.getElementById("relayMsg").textContent = t("relay_err_url");
     return;
@@ -450,12 +402,10 @@ document.getElementById("relayStart").addEventListener("click", async () => {
     document.getElementById("relayMsg").textContent = t("relay_err_key");
     return;
   }
-  const topKbps = Math.round((isNaN(topMbps) ? 8 : topMbps) * 1000);
-  await applyRelayMode();
   try {
-    await invoke("relay_start", { targetUrl: url, streamKey: key, topKbps });
+    await invoke("relay_start", { targetUrl: url, streamKey: key });
     try {
-      localStorage.setItem(RELAY_TARGET_KEY, JSON.stringify({ url, key, top: topMbps }));
+      localStorage.setItem(RELAY_TARGET_KEY, JSON.stringify({ url, key }));
     } catch {}
     document.getElementById("relayMsg").textContent = t("relay_started");
     relayRunning = true;
@@ -483,7 +433,6 @@ document.getElementById("relayStop").addEventListener("click", async () => {
 });
 
 loadRelayTarget();
-loadRelayMode();
 pollRelayStatus();
 
 // ---------- زبان و تم ----------
@@ -913,3 +862,4 @@ updStartup();
 loadScanServers();
 refreshPing();
 setInterval(refreshPing, 5000);
+
