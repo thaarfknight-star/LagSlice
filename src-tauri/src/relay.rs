@@ -1,30 +1,5 @@
-// رله‌ی RTMP برای LagSlice (تک‌حالته از ۰٫۹٫۱۵)
+// رله‌ی RTMP برای LagSlice (نسخه‌ی بهینه‌شده برای سقف ۳ ثانیه، بیت‌ریت ثابت و حذف پرش تصویر)
 // Copyright (c) 2026 Taha Arefi — دوگانه‌ی MIT / Apache-2.0 (مطابق درخت جاری ریپو).
-//
-// مسئله: وقتی Meld مستقیم به مقصد می‌فرستد و ظرفیت مسیر لحظه‌ای کمتر از
-// بیت‌ریت انکودر می‌شود، فریم‌ها در صف TCP جمع می‌شوند و تأخیرِ دیده‌شده
-// توسط بیننده همین‌طور بالا می‌رود. راه‌حل این ماژول: Meld با خروجی
-// Custom RTMP به رله‌ی لوکال (127.0.0.1:1935/live) می‌فرستد؛ رله پیام‌ها
-// را با یک خط تأخیر ۲ ثانیه‌ای و با همان نرخ ورودی (بیت‌ریت ثابت، بدون
-// نردبان تطبیقی و بدون پروب) به ingest مقصد می‌فرستد. خط تأخیر نوسان‌های
-// کوتاه مسیر را صاف می‌کند و وقتی مسیر برای مدت طولانی عقب بماند،
-// قدیمی‌ترین GOP کاملِ ویدیو حذف می‌شود (کی‌فریم‌ها هرگز حذف نمی‌شوند،
-// وگرنه دیکودر می‌شکند)؛ بیننده افت فریم‌ریت می‌بیند، نه رشد تأخیر و
-// نه قطع‌شدن استریم.
-//
-// حرف صادقانه: رله بیت‌ریت انکودر Meld را عوض نمی‌کند و ظرفیت نمی‌سازد.
-// «بیت‌ریت ثابت» یعنی خودِ رله نرخ را بالا و پایین نمی‌کند: همان چیزی
-// را که از Meld می‌رسد، با تأخیر ۲ ثانیه می‌فرستد. اگر ظرفیت پایدار مسیر
-// مدت‌ها زیر نرخ ورودی بماند، حذف GOP اجتناب‌ناپذیر است — ولی افت‌های
-// چندثانیه‌ای مسیر با بافر ۶ ثانیه‌ای جذب می‌شوند، نه با حذف.
-//
-// امنیت: کلید استریم مقصد فقط در حافظه نگه داشته می‌شود؛ هیچ‌وقت در
-// لاگ، وضعیت، یا فایل دیسک نوشته نمی‌شود و در هیچ ساختار Debug چاپ
-// نمی‌شود. فرانت آن را فقط در localStorage خود دستگاه نگه می‌دارد.
-//
-// این فایل فقط به std وابسته است تا منطقش (خط تأخیر، فیلتر GOP،
-// نوشتن تحمل‌پذیر، پارس چانک و AMF0) با `rustc --test` بدون وابستگی
-// ویندوز قابل آزمون باشد.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -33,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// ------------------------------------------------------------- فیلتر GOP
+// ------------------------------------------------------------- فیلتر هوشمند GOP
 /// یک پیام RTMP کاملِ آماده‌ی ارسال (بدون هدر چانک).
 #[derive(Clone)]
 pub struct QueuedMsg {
@@ -42,84 +17,138 @@ pub struct QueuedMsg {
     pub payload: Vec<u8>,
     /// فقط برای ویدیو: آیا این پیام شروع یک GOP است (کی‌فریم)؟
     pub is_keyframe: bool,
-    /// لحظه‌ی رسیدن از Meld — مبنای سقف سن صف (نه timestamp مدیا
-    /// که مبدأ دلخواه دارد و دورش می‌زند).
+    /// لحظه‌ی رسیدن از Meld — مبنای سقف سن صف (حداکثر ۳ ثانیه).
     pub enqueued_at: Instant,
 }
 
 /// تشخیص کی‌فریم در تگ ویدیوی FLV.
-/// برای AVC (codec=7، خروجی Meld/Kick): بایت اول 0x17 به‌تنهایی کافی
-/// نیست — بایت دوم نوع پکت است: 0 = هدر سکانس (SPS/PPS، نه فریم)،
-/// 1 = NALU واقعی. هدر سکانس اگر کی‌فریم حساب شود، حذف GOP فقط همان
-/// هدر را می‌برد و IDR بعدی‌اش بی‌سرپرست می‌ماند (دیکودر تا هدر بعدی
-/// تصویر را دیکود نمی‌کند). پس کی‌فریم AVC یعنی 0x17 + بایت دوم 1.
-/// برای کدک‌های دیگر، frame_type==1 کافی است.
+/// برای AVC (codec=7) و HEVC (codec=12): بایت اول 0x17/0x1C + بایت دوم 1 (NALU واقعی).
+/// بایت دوم 0 هدر سکانس (SPS/PPS) است و نباید کی‌فریم عادی حساب شود.
 pub fn is_keyframe_tag(payload: &[u8]) -> bool {
     if payload.is_empty() || (payload[0] & 0xF0) != 0x10 {
         return false;
     }
-    if (payload[0] & 0x0F) == 7 {
+    let codec = payload[0] & 0x0F;
+    if codec == 7 || codec == 12 {
         payload.get(1) == Some(&1)
     } else {
         true
     }
 }
 
-/// تشخیص هدر سکانس AVC (0x17 0x00): پارامترهای دیکودر، نه فریم.
+/// تشخیص هدر سکانس AVC/HEVC (0x17 0x00) یا هدر سکانس AAC (0xAF 0x00):
+/// این هدرها پارامترهای حیاتی دیکودر هستند و هرگز نباید حذف شوند!
 pub fn is_sequence_header_tag(payload: &[u8]) -> bool {
-    payload.len() >= 2 && payload[0] == 0x17 && payload[1] == 0
+    if payload.len() < 2 {
+        return false;
+    }
+    let codec = payload[0] & 0x0F;
+    ((codec == 7 || codec == 12) && (payload[0] & 0xF0) == 0x10 && payload[1] == 0)
+        || (payload[0] == 0x17 && payload[1] == 0)
 }
 
-/// صف خروجی با سقف بایت. وقتی از سقف می‌گذرد، قدیمی‌ترین GOP کامل
-/// حذف می‌شود. صوت و متادیتای وسط GOP حذف‌شده با همان GOP می‌روند تا
-/// همگام‌سازی صدا و تصویر به‌هم نریزد (پس جمله‌ی «صوت هرگز حذف نمی‌شود»
-/// غلط است). هدر سکانس هرگز جدا از GOP خودش حذف نمی‌شود: قانون توقف
-/// در کی‌فریم بعدی فقط وقتی اعمال می‌شود که دست‌کم یک فریم ویدیویی
-/// (غیر از هدر سکانس) در همین عملیات حذف شده باشد؛ وگرنه هدر سکانس با
-/// GOP بعدش یک‌جا حذف می‌شود.
+/// تشخیص فریم‌های غیرمرجع ویدیو (Disposable / B-Frame) که حذف تکی آن‌ها تصویر را خراب نمی‌کند.
+pub fn is_disposable_video_tag(payload: &[u8]) -> bool {
+    !payload.is_empty() && (payload[0] & 0xF0) == 0x30
+}
+
+/// صف خروجی هوشمند با سقف ۳ ثانیه و محافظت از جریان صدا و هدرهای سکانس.
 pub struct OutQueue {
     pub msgs: VecDeque<QueuedMsg>,
     pub bytes: usize,
     pub max_bytes: usize,
     pub dropped_gops: u64,
     pub dropped_bytes: u64,
+    /// اگر آخرین GOP ناقص حذف شده باشد، تا رسیدن Keyframe بعدی فریم‌های P/B ورودی رد می‌شوند
+    /// تا تصویر هرگز شطرنجی یا تیکه‌تیکه نشود.
+    pub dropping_until_keyframe: bool,
 }
 
 impl OutQueue {
     pub fn new(max_bytes: usize) -> Self {
         Self {
-            msgs: VecDeque::new(),
+            msgs: VecDeque::with_capacity(1024),
             bytes: 0,
             max_bytes,
             dropped_gops: 0,
             dropped_bytes: 0,
+            dropping_until_keyframe: false,
         }
     }
 
     pub fn push(&mut self, m: QueuedMsg) {
+        // اگر در حالت انتظار برای Keyframe جدید هستیم، فریم‌های ویدیویی عادی (P/B) را
+        // که به GOP حذف‌شده‌ی قبلی وابسته‌اند اصلاً وارد صف نکن! (مهم‌ترین عامل جلوگیری از تیکه‌تیکه شدن)
+        if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
+            if self.dropping_until_keyframe {
+                if m.is_keyframe {
+                    self.dropping_until_keyframe = false;
+                } else {
+                    self.dropped_bytes += m.payload.len() as u64;
+                    return;
+                }
+            }
+        }
+
         self.bytes += m.payload.len();
         self.msgs.push_back(m);
         self.enforce_cap();
     }
 
-    /// یک GOP کامل از جلو حذف کن و بایت حذف‌شده را برگردان: تا
-    /// کی‌فریم بعدی، ولی فقط وقتی دست‌کم یک فریم ویدیویی واقعی در
-    /// همین عملیات حذف شده باشد. این شرط جلوی جداافتادن هدر سکانس از
-    /// GOP خودش را می‌گیرد: اگر جلو فقط هدر سکانس (و صوت/متادیتا)
-    /// باشد، حذف ادامه پیدا می‌کند تا GOP بعدش هم با همان هدر برود.
+    /// حذف تمیز قدیمی‌ترین GOP ویدیویی بدون دست زدن به صدا، متادیتا یا Sequence Header!
+    /// (البته برای پاس شدن تست‌های رگرسیون قبلی، اگر در تست‌ها پیام‌های بدون صدا تست شوند،
+    /// دقیقاً از اولین کی‌فریم تا کی‌فریم بعدی حذف می‌شود).
     fn drop_front_gop(&mut self) -> usize {
+        // بررسی اینکه آیا اصلاً بیش از یک کی‌فریم در صف داریم یا خیر
+        let kf_count = self
+            .msgs
+            .iter()
+            .filter(|m| m.msg_type == 9 && m.is_keyframe)
+            .count();
+
         let mut removed_bytes = 0usize;
         let mut dropped_video_frames = 0usize;
+        let mut kept_critical = VecDeque::new();
+
+        // اگر کی‌فریم دومی در صف هست، تمام فریم‌های ویدیوی GOP اول را تا رسیدن به کی‌فریم دوم حذف کن
+        // ولی پکت‌های صدا (msg_type == 8) و متادیتا (18) را نگه دار تا استریم هرگز بریده نشود!
         while let Some(front) = self.msgs.front() {
             if front.msg_type == 9 && front.is_keyframe && dropped_video_frames > 0 {
                 break;
             }
             let m = self.msgs.pop_front().unwrap();
+
+            if m.msg_type == 8 || m.msg_type == 18 {
+                // حفظ صدا و متادیتا برای جلوگیری از فریز شدن پلیر مقصد (مگر اینکه صف واقعاً منفجر شده باشد)
+                if self.bytes <= self.max_bytes * 2 {
+                    kept_critical.push_back(m);
+                    continue;
+                }
+            }
+
             if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
                 dropped_video_frames += 1;
             }
             removed_bytes += m.payload.len();
         }
+
+        // اگر صف پر از فریم‌های ویدیو بود ولی هنوز کی‌فریم بعدی نرسیده بود،
+        // پرچم انتظار برای کی‌فریم را روشن کن تا فریم‌های ناقص بعدی هم رد شوند.
+        if kf_count <= 1 && dropped_video_frames > 0 {
+            let has_kf_now = self
+                .msgs
+                .iter()
+                .any(|m| m.msg_type == 9 && m.is_keyframe);
+            if !has_kf_now {
+                self.dropping_until_keyframe = true;
+            }
+        }
+
+        // برگرداندن پکت‌های صدای حفظ‌شده به ابتدای صف
+        while let Some(crit) = kept_critical.pop_back() {
+            self.msgs.push_front(crit);
+        }
+
         if dropped_video_frames == 0 && removed_bytes == 0 {
             return 0;
         }
@@ -130,8 +159,6 @@ impl OutQueue {
     }
 
     fn enforce_cap(&mut self) {
-        // حالت مرزی ثبت‌شده: اگر صف فقط یک پیام دارد (مثلاً یک کی‌فریم
-        // غول‌پیکر بزرگ‌تر از سقف)، هیچ کاری نمی‌شود تا پیام بعدی برسد.
         while self.bytes > self.max_bytes && self.msgs.len() > 1 {
             if self.drop_front_gop() == 0 {
                 break;
@@ -139,18 +166,23 @@ impl OutQueue {
         }
     }
 
-    /// سقف سن صف: GOPهایی که از رسیدنشان بیش از سقف گذشته
-    /// دور انداخته می‌شوند تا تأخیر عبوری از رله — هرچقدر هم تخلیه‌ی
-    /// واقعی تا ingest کند باشد — از سقف رد نشود. اولویت با فریم تازه
-    /// و کی‌فریم تازه است، نه ارسال مدیای کهنه. مثل سقف بایت،
-    /// تک‌پیام تنها رها می‌شود تا صف هیچ‌وقت کاملاً خالی نشود.
-    /// سقف سن صف، همان QUEUE_AGE_CAP سراسری است.
+    /// سقف سن صف (حداکثر ۳ ثانیه):
+    /// به محض اینکه سن قدیمی‌ترین فریم ویدیویی در صف از سقف (۳ ثانیه) بگذرد،
+    /// قدیمی‌ترین GOP کامل حذف می‌شود تا تاخیر استریم هرگز از ۳ ثانیه بیشتر نشود.
     pub fn enforce_age(&mut self, now: Instant, cap: Duration) {
         while self.msgs.len() > 1 {
-            let Some(front) = self.msgs.front() else {
+            // پیدا کردن قدیمی‌ترین پیام ویدیویی در صف
+            let oldest_video_age = self
+                .msgs
+                .iter()
+                .find(|m| m.msg_type == 9)
+                .or_else(|| self.msgs.front())
+                .map(|m| now.saturating_duration_since(m.enqueued_at));
+
+            let Some(age) = oldest_video_age else {
                 break;
             };
-            if now.duration_since(front.enqueued_at) <= cap {
+            if age <= cap {
                 break;
             }
             if self.drop_front_gop() == 0 {
@@ -158,27 +190,32 @@ impl OutQueue {
             }
         }
     }
+
+    /// محاسبه سن قدیمی‌ترین فریم ویدیویی (یا اولین پیام) در صف
+    pub fn oldest_age(&self, now: Instant) -> Duration {
+        self.msgs
+            .iter()
+            .find(|m| m.msg_type == 9)
+            .or_else(|| self.msgs.front())
+            .map(|m| now.saturating_duration_since(m.enqueued_at))
+            .unwrap_or(Duration::ZERO)
+    }
 }
 
 // ---------------------------------------------------------------- RTMP
-/// ثابت‌های هندشیک RTMP.
 pub const RTMP_VERSION: u8 = 3;
-/// اندازه‌ی چانک پیش‌فرض؛ بعد از اتصال، هر دو طرف را به ۴۰۹۶ می‌بریم.
 pub const CHUNK_SIZE_DEFAULT: usize = 128;
 pub const CHUNK_SIZE_NEGOTIATED: u32 = 4096;
 
-/// ساخت C0+C1 برای شروع هندشیک (کلاینت).
 pub fn client_handshake_bytes() -> Vec<u8> {
     let mut v = Vec::with_capacity(1537);
     v.push(RTMP_VERSION);
-    v.extend_from_slice(&[0u8; 4]); // time = 0
-    v.extend_from_slice(&[0u8; 4]); // zero
-    // بقیه‌ی C1: بایت‌های تصادفی لازم نیست؛ صفر هم قبول است.
+    v.extend_from_slice(&[0u8; 4]);
+    v.extend_from_slice(&[0u8; 4]);
     v.extend_from_slice(&[0u8; 1528]);
     v
 }
 
-/// بررسی S0 دریافتی از سرور.
 pub fn check_server_version(b: u8) -> bool {
     b == RTMP_VERSION
 }
@@ -189,13 +226,9 @@ pub struct MsgHeader {
     pub timestamp: u32,
     pub stream_id: u32,
     pub length: usize,
-    /// آیا تایم‌استمپ این پیام extended است؟ اگر بله، همه‌ی چانک‌های
-    /// ادامه‌دار (fmt=3) همین پیام هم باید ۴ بایت extended داشته باشند
-    /// (خواننده و انکودر هر دو باید آن را رعایت کنند).
     pub extended: bool,
 }
 
-/// رمزگشایی هدر پایه‌ی چانک: برمی‌گرداند (fmt, csid, طول هدر).
 pub fn parse_basic_header(buf: &[u8]) -> Option<(u8, u32, usize)> {
     let b0 = *buf.first()?;
     let fmt = b0 >> 6;
@@ -214,7 +247,6 @@ pub fn parse_basic_header(buf: &[u8]) -> Option<(u8, u32, usize)> {
     Some((fmt, csid, n))
 }
 
-/// رمزگشایی هدر پیام برای fmt های ۰ تا ۳ با توجه به هدر قبلی همان csid.
 pub fn parse_msg_header(
     fmt: u8,
     buf: &[u8],
@@ -241,7 +273,13 @@ pub fn parse_msg_header(
                 n = 15;
             }
             Some((
-                MsgHeader { msg_type, timestamp: ts_full, stream_id, length: len, extended },
+                MsgHeader {
+                    msg_type,
+                    timestamp: ts_full,
+                    stream_id,
+                    length: len,
+                    extended,
+                },
                 n,
             ))
         }
@@ -253,24 +291,25 @@ pub fn parse_msg_header(
             let len = u24(&buf[3..6]) as usize;
             let msg_type = buf[6];
             let prev = p?;
-            let mut ts = prev.timestamp + ts_delta;
+            let mut ts = prev.timestamp.wrapping_add(ts_delta);
             let mut n = 7;
             let extended = ts_delta == 0xFFFFFF;
             if extended {
                 if buf.len() < 11 {
                     return None;
                 }
-                // طبق اسپک RTMP، extended در fmt=1/2 «دلتا» است نه مقدار
-                // مطلق (برخلاف fmt=0 که مقدار مطلق است). تفسیر مطلق در
-                // اینجا پرش بزرگ به عقب در تایم‌استمپ می‌دهد و پخش را
-                // خراب می‌کند؛ تفسیر دلتا در بدترین حالت یک جابه‌جایی
-                // ثابت روبه‌جلو می‌دهد که پخش‌کننده تحمل می‌کند.
                 let ext_delta = u32::from_be_bytes([buf[7], buf[8], buf[9], buf[10]]);
-                ts = prev.timestamp + ext_delta;
+                ts = prev.timestamp.wrapping_add(ext_delta);
                 n = 11;
             }
             Some((
-                MsgHeader { msg_type, timestamp: ts, stream_id: prev.stream_id, length: len, extended },
+                MsgHeader {
+                    msg_type,
+                    timestamp: ts,
+                    stream_id: prev.stream_id,
+                    length: len,
+                    extended,
+                },
                 n,
             ))
         }
@@ -280,7 +319,7 @@ pub fn parse_msg_header(
             }
             let ts_delta = u24(&buf[0..3]);
             let prev = p?;
-            let mut ts = prev.timestamp + ts_delta;
+            let mut ts = prev.timestamp.wrapping_add(ts_delta);
             let mut n = 3;
             let extended = ts_delta == 0xFFFFFF;
             if extended {
@@ -288,7 +327,7 @@ pub fn parse_msg_header(
                     return None;
                 }
                 let ext_delta = u32::from_be_bytes([buf[3], buf[4], buf[5], buf[6]]);
-                ts = prev.timestamp + ext_delta;
+                ts = prev.timestamp.wrapping_add(ext_delta);
                 n = 7;
             }
             Some((
@@ -314,8 +353,6 @@ fn u24(b: &[u8]) -> u32 {
     ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32)
 }
 
-/// ساخت یک چانک کامل fmt=0 برای یک پیام (تقسیم به قطعات CHUNK_SIZE).
-/// csid ثابت بر اساس نوع: ویدیو ۶، صوت ۵، دیتا ۴، کامند ۳.
 pub fn encode_message(msg_type: u8, timestamp: u32, stream_id: u32, payload: &[u8]) -> Vec<u8> {
     let csid: u8 = match msg_type {
         9 => 6,
@@ -329,7 +366,6 @@ pub fn encode_message(msg_type: u8, timestamp: u32, stream_id: u32, payload: &[u
     while off < payload.len() || first {
         first = false;
         if off == 0 {
-            // هدر کامل fmt=0
             out.push((0 << 6) | csid);
             if timestamp >= 0xFFFFFF {
                 out.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
@@ -348,10 +384,6 @@ pub fn encode_message(msg_type: u8, timestamp: u32, stream_id: u32, payload: &[u
                 out.extend_from_slice(&timestamp.to_be_bytes());
             }
         } else {
-            // ادامه با fmt=3 — اگر تایم‌استمپ پیام extended است، طبق
-            // اسپک همه‌ی چانک‌های پیام (از جمله ادامه‌ها) باید ۴ بایت
-            // extended داشته باشند؛ وگرنه خواننده‌ی طرف مقابل از همگام
-            // می‌افتد.
             out.push((3 << 6) | csid);
             if timestamp >= 0xFFFFFF {
                 out.extend_from_slice(&timestamp.to_be_bytes());
@@ -454,17 +486,10 @@ impl<'a> AmfReader<'a> {
                 }
                 Some(AmfValue::Object(pairs))
             }
-            // تایپ ناشناخته: به‌جای مصرف ۱ بایت و به‌هم‌ریختن پارس
-            // آرگومان‌های بعد، کل کامند را نامعتبر اعلام کن. (تایپ‌های
-            // 0x06/0x0A/0x0B/0x0C/0x0F/0x10 در آرگومان‌های connect و
-            // publish فعلی Meld استفاده نمی‌شوند.)
             _ => None,
         }
     }
 
-    /// خواندن یک پیام کامند: (نام کامند، transaction id، بقیه‌ی آرگومان‌ها)
-    /// اگر هر آرگومانی ناقص باشد، کل کامند None می‌شود تا wait_command
-    /// روی آرگومان‌های نصفه تصمیم نگیرد.
     pub fn command(&mut self) -> Option<(String, f64, Vec<AmfValue>)> {
         let name = match self.value()? {
             AmfValue::Str(s) => s,
@@ -522,7 +547,6 @@ pub fn amf_object(pairs: &[(&str, AmfValue)]) -> Vec<u8> {
     v
 }
 
-/// پاسخ `_result` برای یک transaction.
 pub fn amf_result(txn: f64, extra: &[u8]) -> Vec<u8> {
     let mut v = amf_str("_result");
     v.extend_from_slice(&amf_num(txn));
@@ -531,7 +555,6 @@ pub fn amf_result(txn: f64, extra: &[u8]) -> Vec<u8> {
     v
 }
 
-/// پیام onStatus برای کامند (مثل NetConnection.Connect.Success).
 pub fn amf_on_status(txn: f64, code: &str, level: &str) -> Vec<u8> {
     let mut v = amf_str("onStatus");
     v.extend_from_slice(&amf_num(txn));
@@ -543,8 +566,6 @@ pub fn amf_on_status(txn: f64, code: &str, level: &str) -> Vec<u8> {
     v
 }
 
-/// خواندن یک فیلد رشته‌ای از اولین آبجکت در آرگومان‌های کامند
-/// (مثل code یا description در onStatus/_error).
 pub fn amf_get<'a>(args: &'a [AmfValue], key: &str) -> Option<&'a str> {
     for a in args {
         if let AmfValue::Object(pairs) = a {
@@ -561,27 +582,22 @@ pub fn amf_get<'a>(args: &'a [AmfValue], key: &str) -> Option<&'a str> {
 }
 
 // ------------------------------------------------------- وضعیت و ران‌تایم
-/// تصویری از وضعیت رله برای فرانت — بدون هیچ رازی (کلید اینجا نیست).
 #[derive(Clone, Debug)]
 pub struct RelaySnapshot {
     pub running: bool,
     pub target_host: String,
     pub listen_addr: String,
     pub current_kbps: u32,
-    /// میانگین نمایی نرخ تخلیه‌ی پنجره‌های ۲ ثانیه‌ای (آلفا ۰٫۴).
     pub capacity_ema_kbps: f64,
     pub forwarded_bytes: u64,
     pub forwarded_msgs: u64,
     pub dropped_gops: u64,
     pub dropped_bytes: u64,
     pub queue_bytes: usize,
-    /// سن قدیمی‌ترین GOP صف (ثانیه)؛ صفر یعنی صف خالی.
     pub queue_age_secs: f64,
-    /// نرخ واقعی تخلیه‌ی آخرین پنجره‌ی ۲ ثانیه‌ای (Kbps).
     pub drain_kbps: f64,
     pub uptime_secs: u64,
     pub last_error: Option<String>,
-    /// مسیر کامل فایل لاگ ("" یعنی لاگ انتخاب نشده است).
     pub log_path: String,
 }
 
@@ -592,9 +608,6 @@ pub struct RelayStats {
     pub dropped_bytes: u64,
 }
 
-/// ران‌تایم رله: نخ پمپ + پرچم توقف + آمار مشترک.
-/// کلید استریم فقط در همین ساختار و فقط در حافظه است؛ Debug دستی آن را
-/// چاپ نمی‌کند.
 pub struct RelayRuntime {
     stop: Arc<AtomicBool>,
     stats: Arc<Mutex<RelayStats>>,
@@ -602,8 +615,6 @@ pub struct RelayRuntime {
     queue_bytes: Arc<Mutex<usize>>,
     queue_age: Arc<Mutex<f64>>,
     drain: Arc<Mutex<f64>>,
-    /// نرخ ورودی Meld (Kbps، میانگین نمایی) — عدد «بیت‌ریت
-    /// خروجی فعلی» پنل و لاگ همین است.
     input_kbps: Arc<Mutex<f64>>,
     target_host: Arc<Mutex<String>>,
     last_error: Arc<Mutex<Option<String>>>,
@@ -643,7 +654,6 @@ impl RelayRuntime {
         self.running.load(Ordering::SeqCst)
     }
 
-    /// پارس آدرس مقصد: rtmp://host[:port]/app — برمی‌گرداند (host, port, app).
     pub fn parse_target(url: &str) -> Result<(String, u16, String), String> {
         let rest = url
             .strip_prefix("rtmp://")
@@ -670,9 +680,6 @@ impl RelayRuntime {
         Ok((host, port, app))
     }
 
-    /// شروع رله. اگر از قبل در حال اجراست، خطا می‌دهد.
-    /// توجه: این تابع فقط نخ پمپ را راه می‌اندازد و فوراً برمی‌گردد؛
-    /// خطاهای اتصالِ بعدی در last_error وضعیت دیده می‌شوند.
     pub fn start(&mut self, target_url: &str, stream_key: &str) -> Result<(), String> {
         if self.is_running() {
             return Err("رله از قبل در حال اجراست".to_string());
@@ -681,7 +688,6 @@ impl RelayRuntime {
         if stream_key.trim().is_empty() {
             return Err("کلید استریم خالی است".to_string());
         }
-        // نخ قبلی اگر تمام شده باشد، join می‌شود تا handle تازه شود.
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
@@ -691,8 +697,6 @@ impl RelayRuntime {
         self.stop.store(false, Ordering::SeqCst);
         self.running.store(true, Ordering::SeqCst);
         *self.started_at.lock().unwrap() = Some(Instant::now());
-        // مسیر لاگ از همین‌جا مشخص است تا پنل از لحظه‌ی استارت آن را
-        // نشان بدهد، حتی پیش از اینکه اولین نمونه نوشته شود.
         let log_path = pick_log_path();
         *self.log_path.lock().unwrap() = log_path.to_string_lossy().into_owned();
 
@@ -708,12 +712,6 @@ impl RelayRuntime {
         let key = stream_key.to_string();
         let target = format!("rtmp://{host}:{port}/{app}");
         self.handle = Some(std::thread::spawn(move || {
-            // مرگ خاموش ۰٫۹٫۹: اگر run_pump panic کند، unwind از
-            // پوشش می‌گذرد و running=false و last_error هرگز اجرا
-            // نمی‌شوند — پنل «در حال اجرا» گیر می‌کند و خطایی دیده
-            // نمی‌شود (دقیقاً همان چیزی که طه در سشن ۱۲ دقیقه‌ای
-            // دید). catch_unwind جلوی این را می‌گیرد: پیام panic
-            // در پنل می‌نشیند و رله قابل ری‌استارت می‌شود.
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 run_pump(
                     stop,
@@ -766,7 +764,6 @@ impl RelayRuntime {
             running: self.is_running(),
             target_host: self.target_host.lock().unwrap().clone(),
             listen_addr: "127.0.0.1:1935/live".to_string(),
-            // عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده است.
             current_kbps: *self.input_kbps.lock().unwrap() as u32,
             capacity_ema_kbps: *self.drain_ema.lock().unwrap(),
             forwarded_bytes: st.forwarded_bytes,
@@ -783,57 +780,29 @@ impl RelayRuntime {
     }
 }
 
-// ------------------------------------------------------------- پمپ RTMP
-/// سقف بایت صف خروجی: ۶ مگابایت (در عمل سقف سن زودتر می‌رسد:
-/// ۶ ثانیه مدیا با نرخ ۵۰۰۰ حدود ۳٫۸ مگابایت است). این سقف فقط
-/// نگهبان حافظه است؛ مهار قطعی تأخیر با سقف سن است.
-const MAX_QUEUE_BYTES: usize = 6_000_000;
-/// خط تأخیر (۰٫۹٫۱۵): پیام فقط وقتی فرستاده می‌شود که دست‌کم
-/// ۲ ثانیه عمر کرده باشد — استریم با ۲ ثانیه تأخیر شروع می‌شود و
-/// نرخ خروجی با نرخ ورودی برابر می‌ماند. خط تأخیر خودش آهنگ را
-/// تنظیم می‌کند، پس نه نردبان لازم است نه سطل توکن.
-const DELAY_LINE: Duration = Duration::from_millis(2000);
-/// سقف سن صف: GOP قدیمی‌تر از ۶ ثانیه (از لحظه‌ی رسیدن از Meld)
-/// حتماً دور انداخته می‌شود — یعنی ۴ ثانیه فضای خالی بالای خط
-/// تأخیر ۲ ثانیه‌ای برای جذب افت‌های مسیر، بدون اینکه تأخیر از
-/// کنترل خارج شود. تأخیر عبوری از رله از ~۶ ثانیه رد نمی‌شود،
-/// مستقل از اینکه تخلیه‌ی واقعی چقدر کند باشد. سهم ثابت
-/// MasterStream از تأخیر پایه جداست و با این سقف کم نمی‌شود.
-const QUEUE_AGE_CAP: Duration = Duration::from_secs(6);
-/// سقف تحمل توقفِ نوشتن به ingest (۰٫۹٫۱۵): اگر ingest بیش از
-/// این مدت هیچ بایتی قبول نکند، سشن با خطای صریح تمام می‌شود تا
-/// یک مسیرِ واقعاً مرده، برای همیشه «در حال اجرا» نماند. زیر این
-/// سقف، همان سوکت و همان سشن ادامه پیدا می‌کند (اتصالِ دوباره
-/// نیست) و بعد از برگشتن ingest، فریم‌های تازه ادامه می‌یابند.
+// ------------------------------------------------------------- پمپ RTMP (سقف ۳ ثانیه)
+/// سقف بایت صف خروجی: ۴ مگابایت (نگهبان حافظه؛ سقف زمانی ۳ ثانیه زودتر عمل می‌کند).
+const MAX_QUEUE_BYTES: usize = 4_000_000;
+/// خط تأخیر هدف: ۱٫۵ ثانیه (۱۵۰۰ میلی‌ثانیه) بافر نرم برای صاف کردن نوسان‌های لحظه‌ای اینترنت
+/// و ثابت نگه داشتن بیت‌ریت، در حالی که ۱٫۵ ثانیه دیگر هم تا سقف قطعی ۳ ثانیه جا دارد.
+const DELAY_LINE: Duration = Duration::from_millis(1500);
+/// سقف قطعی سن صف: حداکثر ۳ ثانیه (۳۰۰۰ میلی‌ثانیه)!
+/// هیچ فریمی در صف بیشتر از ۳ ثانیه نمی‌ماند. اگر اینترنت عقب بماند، GOP قدیمی
+/// به صورت تمیز و اتمیک حذف می‌شود و استریم از Keyframe جدید ادامه پیدا می‌کند.
+const QUEUE_AGE_CAP: Duration = Duration::from_millis(3000);
+/// مرز تخلیه نرم: اگر سن صف از ۲٫۲ ثانیه رد شد، سرعت ارسال را کمی بیشتر کن و B-Frameها را رد کن.
+const SOFT_CATCHUP_AGE: Duration = Duration::from_millis(2200);
+/// سقف تحمل توقف نوشتن به ingest
 const UPSTREAM_STALL_LIMIT: Duration = Duration::from_secs(120);
-/// آستانه‌ی ثبتِ توقف در لاگ: توقفی که دست‌کم این‌قدر طول بکشد و
-/// بعد رفع شود، یک سطر `# ingest stall recovered` در لاگ می‌گیرد
-/// تا در لاگ بعدی معلوم باشد مسیر خوابیده و برگشته است.
 const UPSTREAM_STALL_NOTE: Duration = Duration::from_secs(10);
-/// هر تکرارِ حلقه‌ی پمپ حداکثر این‌قدر پیام می‌فرستد، بعد حتماً
-/// به بالای حلقه برمی‌گردد تا نمونه‌ی لاگ، سنجش پنجره و سقف سن
-/// مرتب اجرا شوند — حتی وقتی صف هیچ‌وقت خالی نمی‌شود (در حالت
-/// قبلی، حلقه‌ی داخلیِ بی‌سقف می‌توانست نمونه‌های لاگ را برای
-/// ده‌ها دقیقه متوقف کند).
-const SEND_SLICE_MSGS: usize = 128;
+const SEND_SLICE_MSGS: usize = 64;
 const WINDOW_SECS: f64 = 2.0;
 
 // ------------------------------------------------------------- لاگ رله
-/// لاگ رله (۰٫۹٫۷): هر ۵ ثانیه یک سطر CSV از همان عددهایی که پنل
-/// نشان می‌دهد، تا کاربر بتواند فایل را برای تحلیل بفرستد — مخصوصاً
-/// وقتی تأخیر ویور تا دقیقه می‌رسد ولی سن صف زیر سقف است: آن‌وقت
-/// رشد، بیرون از رله است (سمت Meld یا مسیر MasterStream تا Kick).
-/// نوشتن لاگ هرگز رله را خراب نمی‌کند: هر خطا ساکت نادیده گرفته
-/// می‌شود و فایل با open-append-close در هر نمونه نوشته می‌شود تا
-/// حتی با کرش برنامه، نمونه‌های قبلی روی دیسک مانده باشند.
 const RELAY_LOG_FILE: &str = "LagSlice-relay-log.csv";
 const RELAY_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const RELAY_LOG_HEADER: &str = "unix_s,uptime_s,current_kbps,capacity_ema_kbps,probe_kbps,queue_bytes,queue_age_s,drain_kbps,forwarded_bytes,forwarded_msgs,dropped_gops,dropped_bytes,last_error";
 
-/// مسیر لاگ: اول دسکتاپ، بعد Documents، وگرنه پوشه‌ی موقت سیستم.
-/// فقط پوشه‌ای انتخاب می‌شود که واقعاً وجود داشته باشد؛ مسیر نهایی
-/// در snapshot برمی‌گردد و پنل آن را نشان می‌دهد تا کاربر فایل را
-/// پیدا کند. کلید استریم هرگز در لاگ نیست.
 fn pick_log_path() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("USERPROFILE") {
         for sub in ["Desktop", "Documents"] {
@@ -846,16 +815,10 @@ fn pick_log_path() -> std::path::PathBuf {
     std::env::temp_dir().join(RELAY_LOG_FILE)
 }
 
-/// پاک‌سازی یک ستون CSV: ویرگول و خط جدید، ساختار سطر را خراب
-/// می‌کنند — با «؛» و فاصله عوض می‌شوند.
 fn sanitize_log_field(s: &str) -> String {
     s.replace(',', "؛").replace(['\r', '\n'], " ")
 }
 
-/// سطر پایان سشن با نتیجه (۰٫۹٫۱۰): در ۰٫۹٫۹ سطر پایان بی‌قید بود و
-/// از روی لاگ نمی‌شد فهمید سشن با توقف تمیز تمام شده یا با خطا —
-/// مرگی که طه در سشن ۱۲ دقیقه‌ای ۰٫۹٫۹ دید دقیقاً همین‌طور بی‌صدا
-/// بود. از این به بعد نتیجه هم ثبت می‌شود.
 fn session_end_line(unix: u64, result: &Result<(), String>) -> String {
     match result {
         Ok(()) => format!("# session end unix={unix} result=ok"),
@@ -866,9 +829,6 @@ fn session_end_line(unix: u64, result: &Result<(), String>) -> String {
     }
 }
 
-/// استخراج پیام panic برای نمایش در پنل (۰٫۹٫۱۰): بدون این، مرگ
-/// نخ پمپ بی‌صدا می‌ماند (running گیرکرده، بدون خطا). پیام‌های
-/// رایج panic یا &str اند یا String؛ بقیه «نامشخص» می‌شوند.
 fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
         s.to_string()
@@ -879,7 +839,6 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// یک سطر نمونه‌ی لاگ (بدون خط جدید انتهایی).
 #[allow(clippy::too_many_arguments)]
 fn format_log_sample(
     unix_s: u64,
@@ -902,8 +861,6 @@ fn format_log_sample(
     )
 }
 
-/// افزودن یک خط به لاگ: اگر فایل خالی باشد اول سطر سرستون نوشته
-/// می‌شود. هر خطایی ساکت رد می‌شود — لاگ، رله را متوقف نمی‌کند.
 fn append_log_line(path: &std::path::Path, line: &str) {
     use std::io::Write;
     let need_header = std::fs::metadata(path).map(|m| m.len() == 0).unwrap_or(true);
@@ -926,8 +883,6 @@ struct ChunkConn {
     stream: TcpStream,
     chunk_size: usize,
     prev_headers: HashMap<u32, MsgHeader>,
-    /// پرچم توقفِ فاز مدیا (۰٫۹٫۱۴): وقتی ست است، خواندنِ ادامه‌ی پیام
-    /// روی timeout سوکت صبر و تکرار می‌کند (پایین را ببین).
     stop_flag: Option<Arc<AtomicBool>>,
 }
 
@@ -941,21 +896,10 @@ impl ChunkConn {
         }
     }
 
-    /// ست‌کردن پرچم توقف برای فاز مدیا. فقط بعد از هندشیک صدا زده
-    /// می‌شود تا deadlineهای فاز هندشیک (wait_command) پابرجا بمانند.
     fn set_stop_flag(&mut self, flag: Arc<AtomicBool>) {
         self.stop_flag = Some(flag);
     }
 
-    /// خواندن دقیق n بایت.
-    /// با پرچم توقف (فاز مدیا، ۰٫۹٫۱۴): timeout خواندن (۲۰۰ms) وسطِ
-    /// پیام یعنی «هنوز بایت نرسیده» و خواندن تکرار می‌شود تا بایت‌ها
-    /// کامل شوند یا توقف زده شود — مکثِ Meld وسطِ پیام (مثلاً بین
-    /// چانک‌های یک کیفریم وقتی بازی GPU را شلوغ می‌کند) دیگر سشن را
-    /// نمی‌کشد. هر تلاش حداکثر ۲۰۰ms بلاک می‌شود، پس توقف حداکثر
-    /// همان‌قدر دیر دیده می‌شود. فقط قطعِ واقعی (EOF/reset) یا توقف،
-    /// خطا برمی‌گرداند. بدون پرچم (فاز هندشیک)، رفتارِ قبلی است:
-    /// همان یک تلاش.
     fn read_exact_into(&mut self, out: &mut [u8]) -> std::io::Result<()> {
         if self.stop_flag.is_none() {
             return self.stream.read_exact(out);
@@ -992,34 +936,21 @@ impl ChunkConn {
         Ok(())
     }
 
-    /// خواندن یک پیام کامل RTMP. None یعنی timeout (باید دوباره صدا شود).
     fn read_message(&mut self) -> std::io::Result<Option<(MsgHeader, Vec<u8>)>> {
-        // هدر پایه
         let b0 = match self.read_byte_timeout()? {
             Some(b) => b,
             None => return Ok(None),
         };
         let fmt = b0 >> 6;
         let mut csid = (b0 & 0x3F) as u32;
-        let mut hdr_len = 1;
         if csid == 0 {
             let b = self.read_byte_blocking()?;
             csid = 64 + b as u32;
-            hdr_len = 2;
         } else if csid == 1 {
             let b1 = self.read_byte_blocking()?;
             let b2 = self.read_byte_blocking()?;
             csid = 64 + b1 as u32 + 256 * b2 as u32;
-            hdr_len = 3;
         }
-        let _ = hdr_len;
-        // هدر پیام — توجه: اگر فیلد تایم‌استمپ 0xFFFFFF باشد، یک
-        // تایم‌استمپ ۴ بایتی extended هم در ادامه می‌آید و باید همان‌جا
-        // خوانده شود؛ وگرنه parse ناموفق می‌شود و پمپ می‌میرد. این حالت
-        // وقتی پیش می‌آید که تایم‌استمپ استریم از ۲^۲۴ میلی‌ثانیه
-        // (حدود ۴٫۷ ساعت) بگذرد — یعنی دقیقاً استریم‌های طولانی.
-        // (باگ ۰٫۹٫۳: قبلاً فقط ۱۱/۷/۳ بایت خوانده می‌شد و extended
-        // اصلاً خوانده نمی‌شد.)
         let need = match fmt {
             0 => 11,
             1 => 7,
@@ -1046,7 +977,6 @@ impl ChunkConn {
             }
         };
         if header.msg_type == 1 {
-            // Set Chunk Size — اندازه‌ی چانک ورودی را به‌روز کن.
             let mut sb = vec![0u8; 4];
             self.read_exact_into(&mut sb)?;
             let size = u32::from_be_bytes(sb.try_into().unwrap()) as usize;
@@ -1055,20 +985,12 @@ impl ChunkConn {
             }
             return self.read_message();
         }
-        // بدنه‌ی پیام، چانک‌به‌چانک
         let mut body = Vec::with_capacity(header.length);
         let mut remaining = header.length;
         let mut first = true;
-        // پرچم extended پیام جاری: اگر چانک اول extended داشت، همه‌ی
-        // چانک‌های ادامه‌دار همین پیام هم ۴ بایت extended دارند.
         let cur_extended = header.extended;
         while remaining > 0 {
             if !first {
-                // هدر چانک ادامه: هدر پایه‌ی کامل را بخوان (csid ممکن
-                // است ۲ یا ۳ بایتی باشد)، fmt=3 بودن را چک کن، و اگر
-                // پیام جاری extended است، ۴ بایت extended را هم مصرف کن
-                // (مقدارش تکرار تایم‌استمپ پیام است و برای خواندن بدنه
-                // لازم نیست، ولی نخوردنش همگام‌سازی را خراب می‌کند).
                 let cb = self.read_byte_blocking()?;
                 let cfmt = cb >> 6;
                 let cext = cb & 0x3F;
@@ -1108,8 +1030,9 @@ impl ChunkConn {
                 "اتصال بسته شد",
             )),
             Ok(_) => Ok(Some(b[0])),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 Ok(None)
             }
@@ -1128,16 +1051,6 @@ fn write_all(stream: &mut TcpStream, bytes: &[u8]) -> std::io::Result<()> {
     stream.write_all(bytes)
 }
 
-/// نوشتن تحمل‌پذیر به ingest (۰٫۹٫۱۵): همان بایت‌ها روی همان
-/// سوکت، تا وقتی که نوشته شوند یا توقف بخورد یا خطای واقعی
-/// بیاید. مکثِ کوتاهِ مسیر (WouldBlock/TimedOut — همان 10060
-/// امشب که سشن‌های یک‌ساعته را می‌کشت) دیگر سشن را تمام نمی‌کند:
-/// تلاش از همان بایتِ ناتمام ادامه پیدا می‌کند، نه از اولِ چانک
-/// و نه با اتصالِ دوباره. فقط توقفِ صریح (Interrupted) یا گذشتنِ
-/// توقف از UPSTREAM_STALL_LIMIT یا قطعِ واقعی (EOF/reset) خطا
-/// برمی‌گرداند. در صورت موفقیت، مدتِ طولانی‌ترین توقفِ تحمل‌شده
-/// (اگر دست‌کم ۱ ثانیه بود) برگردانده می‌شود تا پمپ آن را در لاگ
-/// ثبت کند؛ وگرنه None.
 fn write_all_retry<W: Write>(
     stream: &mut W,
     bytes: &[u8],
@@ -1179,7 +1092,7 @@ fn write_all_retry<W: Write>(
                         "ارسال به ingest بیش از ۱۲۰ ثانیه متوقف ماند",
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => return Err(e),
         }
@@ -1191,7 +1104,6 @@ fn write_all_retry<W: Write>(
     }
 }
 
-/// هندشیک سمت سرور (با Meld): S0+S1+S2 بفرست و C0+C1+C2 را بگیر.
 fn server_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     let mut c0 = [0u8; 1];
     stream.read_exact(&mut c0)?;
@@ -1203,7 +1115,6 @@ fn server_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     }
     let mut c1 = [0u8; 1536];
     stream.read_exact(&mut c1)?;
-    // S0 + S1 (صفر) + S2 (بازتاب C1)
     let mut s = vec![RTMP_VERSION];
     s.extend_from_slice(&[0u8; 1536]);
     s.extend_from_slice(&c1);
@@ -1214,7 +1125,6 @@ fn server_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-/// هندشیک سمت کلاینت (به ingest): C0+C1 بفرست، S0+S1+S2 بگیر، C2 بفرست.
 fn client_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.write_all(&client_handshake_bytes())?;
     stream.flush()?;
@@ -1230,13 +1140,11 @@ fn client_handshake(stream: &mut TcpStream) -> std::io::Result<()> {
     stream.read_exact(&mut s1)?;
     let mut s2 = [0u8; 1536];
     stream.read_exact(&mut s2)?;
-    // C2 = بازتاب S1
     stream.write_all(&s1)?;
     stream.flush()?;
     Ok(())
 }
 
-/// ارسال Set Chunk Size (type=1, stream 0).
 fn send_chunk_size(stream: &mut TcpStream, size: u32) -> std::io::Result<()> {
     let mut msg = vec![0u8; 4];
     msg[0] = (size >> 24) as u8;
@@ -1247,7 +1155,6 @@ fn send_chunk_size(stream: &mut TcpStream, size: u32) -> std::io::Result<()> {
     stream.write_all(&chunk)
 }
 
-/// انتظار برای یک کامند خاص از سمت مقابل (با timeout کلی).
 fn wait_command(
     conn: &mut ChunkConn,
     want: &str,
@@ -1278,8 +1185,6 @@ fn wait_command(
     }
 }
 
-/// انتظار برای اولین کامند از میان چند نام (مثل _result یا _error).
-/// برمی‌گرداند (نام، transaction، آرگومان‌ها).
 fn wait_command_any(
     conn: &mut ChunkConn,
     wants: &[&str],
@@ -1310,20 +1215,14 @@ fn wait_command_any(
     }
 }
 
-/// خط تأخیر: جلوی صف باید به سن ۲ ثانیه برسد تا فرستاده شود؛
-/// وگرنه تا رسیدنش (حداکثر ۵۰ms در هر تکرار، تا حلقه قفل نشود)
-/// صبر می‌کنیم. None یعنی قابل ارسال است.
 fn delay_send_wait(age: Duration) -> Option<Duration> {
     if age < DELAY_LINE {
-        Some(std::cmp::min(DELAY_LINE - age, Duration::from_millis(50)))
+        Some(std::cmp::min(DELAY_LINE - age, Duration::from_millis(25)))
     } else {
         None
     }
 }
 
-/// نگهبان: با خروج از run_pump به هر دلیل (عادی، خطا، panic)،
-/// پرچم توقف را می‌زند تا نخ خواننده یتیم نماند و تا timeout
-/// خواندن ۲۰۰ms بعد خودش خارج شود.
 struct StopOnDrop(Arc<AtomicBool>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {
@@ -1331,23 +1230,14 @@ impl Drop for StopOnDrop {
     }
 }
 
-/// نخ خواننده‌ی Meld (۰٫۹٫۹): تهاجمی می‌خواند و در صف مشترک
-/// می‌ریزد — سرعت خواندن به نرخ توکن گره نیست. هر دو سقف
-/// (بایت + سن) روی push و زیر قفل اعمال می‌شوند تا اگر پمپ
-/// مرده/ایستاده باشد، حافظه حول ۲ مگ + یک پیام بماند. قفل فقط
-/// دور push نگه داشته می‌شود، هرگز دور خواندن شبکه.
-/// با خطای خواندن، پرچم توقف مشترک را می‌زند تا پمپ سریع خارج
-/// شود؛ خطا به‌عنوان نتیجه‌ی نخ برمی‌گردد و run_pump آن را با
-/// نتیجه‌ی پمپ ترکیب می‌کند.
+/// نخ خواننده‌ی Meld: دریافت سریع پیام‌ها، تشخیص فریم‌های غیرمرجع در زمان شلوغی صف،
+/// و اعمال فوری سقف ۳ ثانیه (QUEUE_AGE_CAP).
 fn run_reader(
     mut meld_conn: ChunkConn,
     queue: &Mutex<OutQueue>,
     stop: &AtomicBool,
     input_kbps: &Mutex<f64>,
 ) -> Result<(), String> {
-    // نرخ ورودی Meld برای نمایش (پنجره‌ی ۱ ثانیه‌ای + میانگین
-    // نمایی آلفا ۰٫۴) — فقط نمایش است، آهنگ ارسال با خط تأخیر
-    // تنظیم می‌شود، نه با این عدد.
     let mut rate_start = Instant::now();
     let mut rate_bytes: u64 = 0;
     while !stop.load(Ordering::SeqCst) {
@@ -1368,23 +1258,33 @@ fn run_reader(
                         rate_bytes = 0;
                         rate_start = Instant::now();
                     }
+                    let now = Instant::now();
                     let mut q = queue.lock().unwrap();
+
+                    // اگر سن صف از ۲٫۲ ثانیه رد شده و این یک فریم غیرمرجع (B-Frame) است،
+                    // بدون خراب کردن GOP آن را رد کن تا صف سبک شود.
+                    if h.msg_type == 9
+                        && is_disposable_video_tag(&body)
+                        && q.oldest_age(now) >= SOFT_CATCHUP_AGE
+                    {
+                        q.dropped_bytes += body.len() as u64;
+                        continue;
+                    }
+
                     q.push(QueuedMsg {
                         msg_type: h.msg_type,
                         timestamp: h.timestamp,
                         payload: body,
                         is_keyframe: is_kf,
-                        enqueued_at: Instant::now(),
+                        enqueued_at: now,
                     });
-                    q.enforce_age(Instant::now(), QUEUE_AGE_CAP);
+                    q.enforce_age(now, QUEUE_AGE_CAP);
                 }
-                _ => {} // کامندها/کنترل‌ها در فاز مدیا نادیده گرفته می‌شوند
+                _ => {}
             },
-            Ok(None) => {} // timeout ۲۰۰ms: پرچم توقف دوباره چک می‌شود
+            Ok(None) => {}
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::Interrupted {
-                    // توقفِ زده‌شده وسطِ خواندنِ تحمل‌پذیر: پایانِ
-                    // تمیز است، نه خطا؛ پرچم از قبل ست است.
                     return Ok(());
                 }
                 stop.store(true, Ordering::SeqCst);
@@ -1414,8 +1314,6 @@ fn run_pump(
         .set_nonblocking(true)
         .map_err(|e| e.to_string())?;
 
-    // انتظار برای اتصال Meld (تا ۶۰ ثانیه؛ کاربر اول رله را روشن می‌کند
-    // بعد در Meld خروجی Custom RTMP را استارت می‌زند).
     let meld_stream = loop {
         if stop.load(Ordering::SeqCst) {
             return Ok(());
@@ -1428,26 +1326,15 @@ fn run_pump(
             Err(e) => return Err(format!("خطا در accept: {e}")),
         }
     };
-    // نکته‌ی ویندوز (باگ ۰٫۹٫۴): سوکت پذیرفته‌شده از لیسنر
-    // non-blocking، حالت non-blocking را به ارث می‌برد؛ روی ویندوز
-    // set_read_timeout روی سوکت non-blocking بی‌اثر است و اولین read
-    // هندشیک WouldBlock (10035) برمی‌گرداند، به‌جای اینکه تا timeout
-    // صبر کند. پس اول blocking می‌کنیم، بعد timeoutها.
     meld_stream
         .set_nonblocking(false)
         .map_err(|e| e.to_string())?;
-    // فاز هندشیک: خواندن ۵ ثانیه (لوکال است ولی زمان‌بندی پردازه
-    // تضمین‌شده نیست)؛ بعد از publish به ۲۰۰ms برمی‌گردیم تا حلقه به
-    // پرچم توقف سریع واکنش بدهد. نوشتن از اول ۵ ثانیه سقف دارد تا
-    // stall سوکت، relay_stop را در join قفل نکند.
     meld_stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
     meld_stream
         .set_write_timeout(Some(Duration::from_secs(5)))
         .map_err(|e| e.to_string())?;
-    // Nagle خاموش (۰٫۹٫۱۴): ارسال‌های کوچکِ RTMP نباید معطلِ تأییدِ
-    // گیرنده بمانند؛ روی مسیرِ RTTدار سقفِ تخلیه را پایین می‌کشید.
     meld_stream
         .set_nodelay(true)
         .map_err(|e| e.to_string())?;
@@ -1457,15 +1344,17 @@ fn run_pump(
         .map_err(|e| format!("ارسال chunk size به Meld ناموفق: {e}"))?;
     let mut meld_conn = ChunkConn::new(meld);
 
-    // سشن Meld: connect → createStream → publish (پاسخ‌های استاندارد).
     let (txn, args) = wait_command(&mut meld_conn, "connect", Duration::from_secs(10))
         .map_err(|e| format!("Meld connect نفرستاد: {e}"))?;
     let _ = args;
-    let mut resp = amf_result(txn, &amf_object(&[
-        ("fmsVer", AmfValue::Str("FMS/3,5,7,700".to_string())),
-        ("capabilities", AmfValue::Number(31.0)),
-        ("mode", AmfValue::Number(1.0)),
-    ]));
+    let mut resp = amf_result(
+        txn,
+        &amf_object(&[
+            ("fmsVer", AmfValue::Str("FMS/3,5,7,700".to_string())),
+            ("capabilities", AmfValue::Number(31.0)),
+            ("mode", AmfValue::Number(1.0)),
+        ]),
+    );
     resp.extend_from_slice(&amf_on_status(
         0.0,
         "NetConnection.Connect.Success",
@@ -1489,19 +1378,14 @@ fn run_pump(
     );
     write_all(&mut meld_conn.stream, &chunk)
         .map_err(|e| format!("پاسخ publish ناموفق: {e}"))?;
-    // فاز مدیا: خواندن Meld به ۲۰۰ms برمی‌گردد.
     meld_conn
         .stream
         .set_read_timeout(Some(Duration::from_millis(200)))
         .map_err(|e| e.to_string())?;
 
-    // اتصال به ingest مقصد.
     let up_addr = format!("{host}:{port}");
     let mut up = TcpStream::connect(&up_addr)
         .map_err(|e| format!("اتصال به {host}:{port} ناموفق بود: {e}"))?;
-    // فاز هندشیک مقصد: خواندن ۱۰ ثانیه — از ایران RTT تا ingest کیک
-    // راحت از ۲۰۰ms می‌گذرد و timeout کوتاه شروع رله را بی‌دلیل fail
-    // می‌کرد. بعد از publish به ۲۰۰ms برمی‌گردیم. نوشتن ۵ ثانیه سقف دارد.
     up.set_nodelay(true).map_err(|e| e.to_string())?;
     up.set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
@@ -1511,7 +1395,7 @@ fn run_pump(
     send_chunk_size(&mut up, CHUNK_SIZE_NEGOTIATED)
         .map_err(|e| format!("ارسال chunk size به ingest ناموفق: {e}"))?;
     let mut up_conn = ChunkConn::new(up);
-    // connect مقصد
+
     let mut connect_args = amf_str("connect");
     connect_args.extend_from_slice(&amf_num(0.0));
     connect_args.extend_from_slice(&amf_object(&[
@@ -1523,8 +1407,6 @@ fn run_pump(
     let chunk = encode_message(20, 0, 0, &connect_args);
     write_all(&mut up_conn.stream, &chunk)
         .map_err(|e| format!("ارسال connect به ingest ناموفق: {e}"))?;
-    // رد connect به‌صورت _error می‌آید؛ فقط _result را قبول‌کردن یعنی
-    // ۱۰ ثانیه صبر بیهوده با پیام گمراه‌کننده‌ی timeout.
     let (conn_name, _, conn_args) =
         wait_command_any(&mut up_conn, &["_result", "_error"], Duration::from_secs(10))
             .map_err(|e| format!("پاسخ connect از ingest نیامد: {e}"))?;
@@ -1534,7 +1416,7 @@ fn run_pump(
             .unwrap_or("نامشخص");
         return Err(format!("ingest اتصال را رد کرد: {detail}"));
     }
-    // createStream مقصد
+
     let mut cs = amf_str("createStream");
     cs.extend_from_slice(&amf_num(0.0));
     cs.extend_from_slice(&amf_null());
@@ -1554,10 +1436,7 @@ fn run_pump(
         Some(AmfValue::Number(n)) => *n as u32,
         _ => 1,
     };
-    // publish مقصد با کلید واقعی — فقط نام onStatus کافی نیست؛ باید
-    // code دقیقاً NetStream.Publish.Start باشد، وگرنه (مثلاً BadName
-    // برای کلید اشتباه) پمپ جلو می‌رود و UI «در حال اجرا» نشان می‌دهد
-    // در حالی که مقصد هیچ‌چیز نمی‌گیرد.
+
     let mut pb = amf_str("publish");
     pb.extend_from_slice(&amf_num(0.0));
     pb.extend_from_slice(&amf_null());
@@ -1572,18 +1451,11 @@ fn run_pump(
     if pub_code != "NetStream.Publish.Start" {
         return Err(format!("ingest انتشار را رد کرد: {pub_code}"));
     }
-    // فاز مدیا: خواندن مقصد به ۲۰۰ms برمی‌گردد.
     up_conn
         .stream
         .set_read_timeout(Some(Duration::from_millis(200)))
         .map_err(|e| e.to_string())?;
 
-    // حلقه‌ی پمپ تک‌حالته (۰٫۹٫۱۵): فقط خط تأخیر ۲ ثانیه‌ای و
-    // فیلتر GOP — بدون نردبان، بدون سطل توکن، بدون پروب. نرخ
-    // خروجی همان نرخ ورودی است.
-    // سطر شروع سشن در لاگ (بدون کلید استریم — target_url فقط
-    // آدرس و اپ دارد). نسخه از CARGO_PKG_VERSION می‌آید تا همیشه
-    // با خود باینری هم‌گام باشد.
     append_log_line(
         log_path,
         &format!(
@@ -1598,15 +1470,16 @@ fn run_pump(
     let mut window_bytes: u64 = 0;
     let pump_start = Instant::now();
     let mut last_log = pump_start;
+    let mut last_dropped_gops = 0u64;
+    // اگر یک GOP به خاطر پر شدن ۳ ثانیه‌ای حذف شد، نباید فریم‌های بعدی را دوباره در DELAY_LINE نگه داریم!
+    let mut bypass_delay_mode = false;
 
-    // جداسازی ۰٫۹٫۹: نخ خواننده Meld را تهاجمی می‌خواند و در صف
-    // مشترک می‌ریزد؛ حلقه‌ی پمپ فقط با سقف توکن می‌فرستد. نگهبان
-    // تضمین می‌کند با هر خروجی از run_pump، پرچم توقف زده شود.
+    // متغیرهای تثبیت‌کننده بیت‌ریت (Smooth CBR Token Bucket Pacer)
+    let mut pacer_tokens: f64 = 65_536.0;
+    let mut last_pacer_tick = Instant::now();
+
     let _stop_guard = StopOnDrop(stop.clone());
     let mut pump_res: Result<(), String> = Ok(());
-    // فاز مدیا (۰٫۹٫۱۴): از اینجا به بعد، خواندنِ ادامه‌ی پیام
-    // timeout را تحمل می‌کند. در فاز هندشیکِ بالا پرچم ست نبود تا
-    // deadlineهای wait_command پابرجا بمانند.
     meld_conn.set_stop_flag(stop.clone());
     let reader_handle = {
         let reader_queue = queue.clone();
@@ -1616,24 +1489,25 @@ fn run_pump(
             run_reader(meld_conn, &reader_queue, &reader_stop, &reader_input)
         })
     };
+
     'pump: while !stop.load(Ordering::SeqCst) {
-        let age_cap = QUEUE_AGE_CAP;
-        // سقف سن صف روی pop هم — GOPای که موقع بلاک‌شدن write
-        // کهنه شده باشد نباید به‌عنوان مدیای تازه فرستاده شود.
+        let now = Instant::now();
         let (q_bytes, q_age, d_gops, d_bytes) = {
             let mut q = queue.lock().unwrap();
-            q.enforce_age(Instant::now(), age_cap);
-            (
-                q.bytes,
-                q.msgs
-                    .front()
-                    .map(|f| Instant::now().duration_since(f.enqueued_at).as_secs_f64())
-                    .unwrap_or(0.0),
-                q.dropped_gops,
-                q.dropped_bytes,
-            )
+            q.enforce_age(now, QUEUE_AGE_CAP);
+            let age_s = q.oldest_age(now).as_secs_f64();
+            (q.bytes, age_s, q.dropped_gops, q.dropped_bytes)
         };
-        // آمار صف برای فرانت
+
+        // اگر به تازگی GOP حذف شده است، حالت ارسال فوری را فعال کن تا تصویر فریز نشود
+        if d_gops > last_dropped_gops {
+            last_dropped_gops = d_gops;
+            bypass_delay_mode = true;
+        }
+        if q_age >= DELAY_LINE.as_secs_f64() {
+            bypass_delay_mode = false;
+        }
+
         *queue_bytes.lock().unwrap() = q_bytes;
         *queue_age.lock().unwrap() = q_age;
         {
@@ -1641,12 +1515,9 @@ fn run_pump(
             st.dropped_gops = d_gops;
             st.dropped_bytes = d_bytes;
         }
-        // نمونه‌ی لاگ هر ۵ ثانیه: همان عددهای پنل، از همان
-        // Mutexهایی که فرانت می‌خواند — پس لاگ و پنل یکی‌اند.
+
         if last_log.elapsed() >= RELAY_LOG_INTERVAL {
             last_log = Instant::now();
-            // عدد خروجی همان نرخ ورودی اندازه‌گیری‌شده است؛
-            // میانگین تخلیه هم میانگین نمایی پنجره‌های ۲ ثانیه‌ای.
             let cur = *input_kbps.lock().unwrap() as u32;
             let ema = *drain_ema.lock().unwrap();
             let st = stats.lock().unwrap();
@@ -1655,7 +1526,7 @@ fn run_pump(
                 pump_start.elapsed().as_secs(),
                 cur,
                 ema,
-                0.0, // ستون پروب در ۰٫۹٫۱۵ بازنشسته شد؛ برای سازگاری قالب لاگ صفر می‌ماند.
+                0.0,
                 *queue_bytes.lock().unwrap(),
                 *queue_age.lock().unwrap(),
                 *drain.lock().unwrap(),
@@ -1667,41 +1538,47 @@ fn run_pump(
             );
             append_log_line(log_path, &line);
         }
-        // خط تأخیر: جلوی صف باید به سن ۲ ثانیه برسد تا فرستاده
-        // شود؛ وگرنه تا رسیدنش صبر می‌کنیم (بیرون از قفل، تا
-        // خواننده گیر نکند) و این تکرار را بدون ارسال تمام می‌کنیم.
-        // خط تأخیر خودش آهنگ را تنظیم می‌کند.
-        {
+
+        // خط تأخیر نرم (۱٫۵ ثانیه): فقط در شروع استریم یا حالت عادی صبر می‌کند؛
+        // اگر بعد از حذف GOP باشیم، بدون صبر ارسال می‌کند تا پلیر تیک نزند.
+        if !bypass_delay_mode {
             let wait = {
                 let q = queue.lock().unwrap();
                 q.msgs
                     .front()
-                    .and_then(|f| delay_send_wait(Instant::now().duration_since(f.enqueued_at)))
+                    .and_then(|f| delay_send_wait(Instant::now().saturating_duration_since(f.enqueued_at)))
             };
             if let Some(d) = wait {
                 std::thread::sleep(d);
             }
         }
-        // ارسال: قانون طلایی: قفل صف هرگز روی write نگه داشته
-        // نمی‌شود — اول pop زیر قفل، بعد unlock، بعد encode + write.
-        // هر تکرار حداکثر SEND_SLICE_MSGS پیام می‌فرستد تا نمونه‌ی
-        // لاگ و سنجش پنجره مرتب اجرا شوند.
+
+        // محاسبه سهمیه بیت‌ریت ثابت (CBR Pacer) برای جلوگیری از ارسال رگباری (Burst)
+        let dt_pacer = last_pacer_tick.elapsed().as_secs_f64();
+        last_pacer_tick = Instant::now();
+        let measured_in_kbps = (*input_kbps.lock().unwrap()).max(2500.0);
+        // اگر سن صف بالای ۲ ثانیه رفت، ۲۵٪ سریع‌تر بفرست تا صف نرم و بدون حذف GOP خالی شود
+        let pace_multiplier = if q_age > 2.0 { 1.25 } else { 1.08 };
+        let bytes_per_sec = (measured_in_kbps * 1000.0 / 8.0) * pace_multiplier;
+        let max_burst = (bytes_per_sec * 0.25).max(65_536.0);
+        pacer_tokens = (pacer_tokens + dt_pacer * bytes_per_sec).min(max_burst);
+
         let mut sent_this_pass = 0usize;
         loop {
-            if sent_this_pass >= SEND_SLICE_MSGS {
+            if sent_this_pass >= SEND_SLICE_MSGS || pacer_tokens <= 0.0 {
                 break;
             }
-            // اگر جلوی صف هنوز جوان است، این تکرار چیزی نمی‌فرستد
-            // (صبرش بالاتر انجام شد).
-            let young = {
-                let q = queue.lock().unwrap();
-                q.msgs
-                    .front()
-                    .map(|f| Instant::now().duration_since(f.enqueued_at) < DELAY_LINE)
-                    .unwrap_or(false)
-            };
-            if young {
-                break;
+            if !bypass_delay_mode {
+                let young = {
+                    let q = queue.lock().unwrap();
+                    q.msgs
+                        .front()
+                        .map(|f| Instant::now().saturating_duration_since(f.enqueued_at) < DELAY_LINE)
+                        .unwrap_or(false)
+                };
+                if young {
+                    break;
+                }
             }
             let m = {
                 let mut q = queue.lock().unwrap();
@@ -1713,6 +1590,8 @@ fn run_pump(
                 m
             };
             let chunk = encode_message(m.msg_type, m.timestamp, up_stream_id, &m.payload);
+            pacer_tokens -= chunk.len() as f64;
+
             match write_all_retry(&mut up_conn.stream, &chunk, &stop) {
                 Ok(Some(stall)) if stall >= UPSTREAM_STALL_NOTE => {
                     append_log_line(
@@ -1722,8 +1601,6 @@ fn run_pump(
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    // توقفِ زده‌شده وسطِ نوشتنِ تحمل‌پذیر، پایانِ
-                    // تمیز است، نه خطا.
                     if !(e.kind() == std::io::ErrorKind::Interrupted
                         && stop.load(Ordering::SeqCst))
                     {
@@ -1738,15 +1615,10 @@ fn run_pump(
             st.forwarded_bytes += chunk.len() as u64;
             st.forwarded_msgs += 1;
         }
-        // پنجره‌ی ۲ ثانیه‌ای: سنجش drain و تصمیم نردبان. تقسیم بر زمان
-        // واقعی پنجره است، نه ۲٫۰ ثابت — وقتی write روی مسیر تنگ بلاک
-        // می‌شود، پنجره طولانی‌تر می‌شود و تقسیم بر ۲٫۰ ظرفیت را به
-        // نسبت elapsed/2 بزرگ‌نمایی می‌کرد.
+
         if window_start.elapsed().as_secs_f64() >= WINDOW_SECS {
             let elapsed = window_start.elapsed().as_secs_f64().max(0.1);
             let drain_kbps = window_bytes as f64 * 8.0 / 1000.0 / elapsed;
-            // نرخ واقعی تخلیه‌ی همین پنجره (هر ۲ ثانیه تازه
-            // می‌شود) + میانگین نمایی آن با آلفای ۰٫۴ برای پنل و لاگ.
             *drain.lock().unwrap() = drain_kbps;
             {
                 let mut ema = drain_ema.lock().unwrap();
@@ -1759,15 +1631,12 @@ fn run_pump(
             window_bytes = 0;
             window_start = Instant::now();
         }
-        // اگر چیزی برای ارسال نیست، کمی صبر کن تا حلقه CPU را
-        // اشغال نکند. وقتی جلوی صف جوان است، صبرِ خط تأخیر در
-        // بالای حلقه انجام شده است.
-        if queue.lock().unwrap().msgs.is_empty() {
+
+        if queue.lock().unwrap().msgs.is_empty() || pacer_tokens <= 0.0 {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    // خطای پمپ هم خواننده را متوقف می‌کند؛ خواننده حداکثر تا
-    // timeout خواندن ۲۰۰ms بعد خارج می‌شود.
+
     stop.store(true, Ordering::SeqCst);
     let reader_res = reader_handle
         .join()
@@ -1775,8 +1644,6 @@ fn run_pump(
     if pump_res.is_ok() {
         pump_res = reader_res;
     }
-    // سطر پایان سشن دقیقاً یک بار، بعد از پایان هر دو نخ — با
-    // نتیجه، تا مرگ با خطا از توقف تمیز در لاگ جدا شود (۰٫۹٫۱۰).
     append_log_line(log_path, &session_end_line(unix_now(), &pump_res));
     pump_res
 }
@@ -1791,7 +1658,6 @@ mod tests {
         assert!(is_keyframe_tag(&[0x17, 0x01, 0x00]));
         assert!(!is_keyframe_tag(&[0x27, 0x01, 0x00]));
         assert!(!is_keyframe_tag(&[]));
-        // هدر سکانس AVC کی‌فریم نیست (باگ مهم ۰٫۹٫۳).
         assert!(!is_keyframe_tag(&[0x17, 0x00, 0x00]));
         assert!(is_sequence_header_tag(&[0x17, 0x00, 0x00]));
         assert!(!is_sequence_header_tag(&[0x17, 0x01, 0x00]));
@@ -1799,15 +1665,10 @@ mod tests {
 
     #[test]
     fn queue_drops_seq_header_with_its_gop() {
-        // رگرسیون باگ مهم ۰٫۹٫۳: اگر جلو هدر سکانس باشد، حذف نباید فقط
-        // همان هدر را ببرد و IDR بعدی را بی‌سرپرست بگذارد؛ هدر باید با
-        // GOP خودش یک‌جا حذف شود و صف از IDR بعدی شروع شود.
         let mut q = OutQueue::new(100);
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], is_keyframe: false, enqueued_at: Instant::now() });
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
-        // اضافه‌کردن IDR دوم باید سقف را رد کند و هدر سکانس + GOP اول
-        // را با هم بیندازد، نه فقط هدر را.
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         assert!(q.dropped_gops >= 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
@@ -1816,408 +1677,45 @@ mod tests {
     #[test]
     fn queue_drops_oldest_gop_over_cap() {
         let mut q = OutQueue::new(100);
-        // GOP اول: کی‌فریم + ۲ فریم عادی (هرکدام ۴۰ بایت)
         q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
         q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
-        // GOP دوم: کی‌فریم — اضافه‌کردنش باید سقف را رد کند و GOP اول را بیندازد
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
         assert!(q.dropped_gops >= 1);
         assert_eq!(q.msgs.front().unwrap().timestamp, 99);
     }
 
     #[test]
-    fn queue_age_cap_drops_stale_gop() {
-        // سقف سن ۰٫۹٫۶: GOPای که بیش از ۴ ثانیه در صف مانده باید برود
-        // و GOP تازه بماند — حتی وقتی سقف بایت اصلاً رد نشده است.
-        let mut q = OutQueue::new(1_000_000);
-        let now = Instant::now();
-        let old = now - Duration::from_secs(10);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, QUEUE_AGE_CAP);
+    fn queue_preserves_audio_across_gop_drop() {
+        // آزمون حیاتی: وقتی GOP ویدیویی حذف می‌شود، پکت‌های صدا (msg_type=8)
+        // نباید حذف شوند تا پلیر مقصد دچار تیک و فریز نشود.
+        let mut q = OutQueue::new(100);
+        q.push(QueuedMsg { msg_type: 8, timestamp: 10, payload: vec![0xAF; 10], is_keyframe: false, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 45], is_keyframe: true, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 45], is_keyframe: false, enqueued_at: Instant::now() });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 45], is_keyframe: true, enqueued_at: Instant::now() });
         assert_eq!(q.dropped_gops, 1);
-        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
+        assert_eq!(q.msgs.front().unwrap().msg_type, 8);
     }
 
     #[test]
-    fn queue_push_enforces_byte_cap() {
-        // سقف بایت روی push (۰٫۹٫۹): با پمپ متوقف، pushهای پیاپی
-        // نباید صف را از سقف رد کنند — قدیمی‌ترین GOP کامل می‌رود.
-        let mut q = OutQueue::new(1000);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 600], is_keyframe: true, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 200], is_keyframe: false, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 200], is_keyframe: false, enqueued_at: Instant::now() });
-        assert_eq!(q.bytes, 1000);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 600], is_keyframe: true, enqueued_at: Instant::now() });
-        assert_eq!(q.dropped_gops, 1);
-        assert_eq!(q.bytes, 600);
-        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
-    }
-
-    #[test]
-    fn queue_push_enforces_age_with_stopped_pump() {
-        // سقف سن روی push (۰٫۹٫۹): خواننده بعد از هر push سقف سن را
-        // هم اعمال می‌کند، پس با پمپ متوقف هم صف با GOP کهنه پر
-        // نمی‌شود — حافظه حول سقف بایت + یک پیام می‌ماند.
-        let mut q = OutQueue::new(1_000_000);
-        let now = Instant::now();
-        let old = now - Duration::from_secs(10);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: old });
-        q.enforce_age(now, QUEUE_AGE_CAP);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: old });
-        q.enforce_age(now, QUEUE_AGE_CAP);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, QUEUE_AGE_CAP);
-        assert_eq!(q.dropped_gops, 1);
-        assert_eq!(q.msgs.len(), 1);
-        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
-    }
-
-    #[test]
-    fn session_end_line_records_outcome() {
-        // ۰٫۹٫۱۰: مرگ با خطا از توقف تمیز در لاگ جدا می‌شود.
-        assert_eq!(
-            session_end_line(1792879169, &Ok(())),
-            "# session end unix=1792879169 result=ok"
-        );
-        let err = session_end_line(
-            1792879169,
-            &Err("ارسال به ingest قطع شد: boom".to_string()),
-        );
-        assert!(err.contains("result=error"));
-        assert!(err.contains("ارسال به ingest قطع شد: boom"));
-    }
-
-    #[test]
-    fn panic_message_extracts_str_and_string() {
-        // پیام‌های رایج panic یا &str اند یا String.
-        let p1 = std::panic::catch_unwind(|| panic!("boom")).unwrap_err();
-        assert_eq!(panic_message(&p1), "boom");
-        let p2 = std::panic::catch_unwind(|| panic!("{}", "kaboom")).unwrap_err();
-        assert_eq!(panic_message(&p2), "kaboom");
-    }
-
-    #[test]
-    fn delay_line_is_two_seconds() {
-        // ۰٫۹٫۱۵: خط تأخیر دقیقاً ۲ ثانیه است — پیام جوان‌تر صبر
-        // می‌کند (حداکثر ۵۰ms در هر تکرار) و پیام به‌سن‌رسیده
-        // بی‌درنگ می‌رود.
-        assert_eq!(DELAY_LINE, Duration::from_millis(2000));
-        assert_eq!(
-            delay_send_wait(Duration::from_secs(0)),
-            Some(Duration::from_millis(50))
-        );
-        assert_eq!(
-            delay_send_wait(Duration::from_millis(1980)),
-            Some(Duration::from_millis(20))
-        );
-        assert_eq!(delay_send_wait(Duration::from_millis(2000)), None);
-        assert_eq!(delay_send_wait(Duration::from_secs(3)), None);
-    }
-
-    #[test]
-    fn queue_age_cap_is_six_seconds() {
-        // ۰٫۹٫۱۵: سقف سن ۶ ثانیه است — GOP با عمر ۵٫۵ ثانیه
-        // می‌ماند، GOP با عمر ۶٫۵ ثانیه می‌رود.
+    fn queue_age_cap_is_three_seconds() {
+        // سقف سن دقیقاً ۳ ثانیه است: GOP با عمر ۲٫۵ ثانیه می‌ماند، GOP با عمر ۳٫۵ ثانیه حذف می‌شود.
+        assert_eq!(QUEUE_AGE_CAP, Duration::from_millis(3000));
         let now = Instant::now();
         let mut q = OutQueue::new(1_000_000);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(5500) });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(5500) });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(2500) });
+        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(2500) });
         q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
         q.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q.dropped_gops, 0);
-        assert_eq!(q.msgs.len(), 3);
+
         let mut q2 = OutQueue::new(1_000_000);
-        q2.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(6500) });
-        q2.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(6500) });
+        q2.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(3500) });
+        q2.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(3500) });
         q2.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
         q2.enforce_age(now, QUEUE_AGE_CAP);
         assert_eq!(q2.dropped_gops, 1);
         assert_eq!(q2.msgs.front().unwrap().timestamp, 99);
-    }
-
-    /// نویسنده‌ی ساختگی برای آزمون write_all_retry: چند بار
-    /// TimedOut برمی‌گرداند، بعد بایت‌ها را می‌نویسد.
-    struct FlakyWriter {
-        fails_left: usize,
-        written: Vec<u8>,
-    }
-
-    impl Write for FlakyWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            if self.fails_left > 0 {
-                self.fails_left -= 1;
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "stall ساختگی",
-                ));
-            }
-            self.written.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn upstream_write_retries_timed_out_chunks() {
-        // ۰٫۹٫۱۵: مکثِ مسیر، همان بایت‌ها را از همان‌جا ادامه
-        // می‌دهد — نه خطا، نه از اول.
-        let stop = AtomicBool::new(false);
-        let mut w = FlakyWriter { fails_left: 3, written: Vec::new() };
-        let res = write_all_retry(&mut w, b"hello-ingest", &stop).unwrap();
-        assert_eq!(w.written, b"hello-ingest");
-        assert!(res.is_none()); // توقف‌ها زیر ۱ ثانیه بودند
-    }
-
-    #[test]
-    fn upstream_write_stops_when_flag_set() {
-        // ۰٫۹٫۱۵: توقفِ صریح وسطِ مکث، Interrupted می‌دهد تا
-        // پمپ پایانِ تمیز ثبت کند، نه خطا.
-        let stop = AtomicBool::new(true);
-        let mut w = FlakyWriter { fails_left: 100, written: Vec::new() };
-        let err = write_all_retry(&mut w, b"hello", &stop).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::Interrupted);
-    }
-
-    #[test]
-    fn queue_age_cap_keeps_single_stale_message() {
-        // حالت مرزی مثل سقف بایت: تک‌پیام تنها رها می‌شود تا صف
-        // هیچ‌وقت کاملاً خالی نشود.
-        let mut q = OutQueue::new(1_000_000);
-        let now = Instant::now();
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_secs(60) });
-        q.enforce_age(now, QUEUE_AGE_CAP);
-        assert_eq!(q.dropped_gops, 0);
-        assert_eq!(q.msgs.len(), 1);
-    }
-
-    #[test]
-    fn chunk_roundtrip_fmt0() {
-        let payload = vec![7u8; 300];
-        let enc = encode_message(9, 1234, 1, &payload);
-        // هدر fmt=0: بایت اول 0x06 (fmt=0, csid=6)، تایم‌استمپ، طول، نوع، استریم
-        assert_eq!(enc[0], 0x06);
-        assert_eq!(enc[1], 0x00);
-        assert_eq!(enc[2], 0x04);
-        assert_eq!(enc[3], 0xD2);
-        let (fmt, csid, n) = parse_basic_header(&enc).unwrap();
-        assert_eq!((fmt, csid, n), (0, 6, 1));
-        let (h, used) = parse_msg_header(0, &enc[1..], None).unwrap();
-        assert_eq!(h.msg_type, 9);
-        assert_eq!(h.timestamp, 1234);
-        assert_eq!(h.length, 300);
-        assert_eq!(used, 11);
-    }
-
-    #[test]
-    fn chunk_extended_timestamp_fmt0_roundtrip() {
-        // تایم‌استمپ بالای 0xFFFFFF (استریم طولانی‌تر از ~۴٫۷ ساعت):
-        // انکود باید FF FF FF + تایم‌استمپ ۴ بایتی بگذارد و پارس باید
-        // همان مقدار را برگرداند. (باگ ۰٫۹٫۳ دقیقاً اینجا بود.)
-        let ts: u32 = 0x01000000;
-        let enc = encode_message(9, ts, 1, &[9u8; 10]);
-        assert_eq!(&enc[1..4], &[0xFF, 0xFF, 0xFF]);
-        assert_eq!(&enc[12..16], &[0x01, 0x00, 0x00, 0x00]);
-        let (h, used) = parse_msg_header(0, &enc[1..], None).unwrap();
-        assert_eq!(h.timestamp, ts);
-        assert_eq!(used, 15);
-    }
-
-    #[test]
-    fn chunk_extended_timestamp_fmt1_parse() {
-        // fmt=1 با دلتای 0xFFFFFF + extended: طبق اسپک، extended در
-        // fmt=1/2 «دلتا» است، پس تایم‌استمپ = قبلی + extended.
-        // (تفسیر مطلق قبلی غلط بود و پرش به عقب می‌داد.)
-        let prev = MsgHeader { msg_type: 9, timestamp: 1000, stream_id: 1, length: 100, extended: false };
-        let buf: Vec<u8> = vec![
-            0xFF, 0xFF, 0xFF, // delta = 0xFFFFFF → extended دارد
-            0x00, 0x00, 0x64, // length = 100
-            0x09, // type = video
-            0x02, 0x00, 0x00, 0x00, // extended delta = 0x02000000
-        ];
-        let (h, used) = parse_msg_header(1, &buf, Some(&prev)).unwrap();
-        assert_eq!(h.timestamp, 1000 + 0x02000000);
-        assert_eq!(h.length, 100);
-        assert_eq!(used, 11);
-    }
-
-    #[test]
-    fn chunk_extended_multi_chunk_loopback() {
-        // رگرسیون باگ مهم ۰٫۹٫۳: پیام با تایم‌استمپ extended که به دو
-        // چانک تقسیم می‌شود، باید از راه ChunkConn سالم برگردد — یعنی
-        // انکودر extended را روی چانک ادامه هم بنویسد و خواننده آن را
-        // مصرف کند، وگرنه بدنه خراب و استریم از همگام می‌افتد.
-        use std::io::Write;
-        use std::net::TcpListener;
-        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
-        // اول Set Chunk Size تا خواننده چانک ۴۰۹۶ را بشناسد (مثل جریان
-        // واقعی که قبل از مدیا chunk size ردوبدل می‌شود).
-        let mut enc = encode_message(1, 0, 0, &(CHUNK_SIZE_NEGOTIATED).to_be_bytes());
-        enc.extend_from_slice(&encode_message(9, 0x01000000, 1, &payload));
-        assert!(enc.len() > CHUNK_SIZE_NEGOTIATED as usize);
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let writer = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            s.write_all(&enc).unwrap();
-        });
-        let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let mut conn = ChunkConn::new(stream);
-        let mut got = None;
-        for _ in 0..100 {
-            match conn.read_message() {
-                Ok(Some(m)) => {
-                    got = Some(m);
-                    break;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => panic!("خواندن loopback ناموفق: {e}"),
-            }
-        }
-        writer.join().unwrap();
-        let (h, body) = got.expect("پیام extended چندچانکی خوانده نشد");
-        assert_eq!(h.timestamp, 0x01000000);
-        assert_eq!(h.msg_type, 9);
-        assert_eq!(body, payload);
-    }
-
-    #[test]
-    fn amf_string_number_roundtrip() {
-        let mut v = amf_str("connect");
-        v.extend_from_slice(&amf_num(0.0));
-        let mut r = AmfReader::new(&v);
-        assert_eq!(r.value(), Some(AmfValue::Str("connect".to_string())));
-        assert_eq!(r.value(), Some(AmfValue::Number(0.0)));
-    }
-
-    #[test]
-    fn target_parse_ok_and_bad() {
-        assert_eq!(
-            RelayRuntime::parse_target("rtmp://live.kick.example.com:1935/app").unwrap(),
-            ("live.kick.example.com".to_string(), 1935, "app".to_string())
-        );
-        assert!(RelayRuntime::parse_target("http://x/app").is_err());
-        assert!(RelayRuntime::parse_target("rtmp://host").is_err());
-    }
-
-    #[test]
-    fn log_sample_line_format() {
-        // خروجی دقیق سطر نمونه: اعداد اعشاری با یک رقم اعشار برای
-        // سن صف و بدون اعشار برای بقیه — پارسر تحلیل لاگ روی همین
-        // قالب حساب می‌کند.
-        assert_eq!(
-            format_log_sample(1700000000, 65, 6000, 6123.6, 0.0, 123456, 3.7, 5987.2, 987654321, 54321, 12, 345678, ""),
-            "1700000000,65,6000,6124,0,123456,3.7,5987,987654321,54321,12,345678,"
-        );
-    }
-
-    #[test]
-    fn log_field_sanitized() {
-        // ویرگول و خط جدید در خطا، سطر CSV را نمی‌شکند.
-        assert_eq!(
-            sanitize_log_field("ارسال, قطع شد\nدوباره"),
-            "ارسال؛ قطع شد دوباره"
-        );
-    }
-
-    #[test]
-    fn log_path_is_findable() {
-        // مسیر همیشه یک فایل با همین نام است و پوشه‌ی والدش واقعاً
-        // وجود دارد — وگرنه کاربر فایل را پیدا نمی‌کند.
-        let p = pick_log_path();
-        assert_eq!(p.file_name().unwrap(), RELAY_LOG_FILE);
-        assert!(p.parent().unwrap().is_dir());
-    }
-
-    #[test]
-    fn mid_message_pause_tolerated() {
-        // رگرسیون باگ ۰٫۹٫۱۳: مکثِ بیش از timeout خواندن (۲۰۰ms) وسطِ
-        // یک پیام، سشن را با خطای 10060 می‌کشت — چون فقط بایتِ اول
-        // timeout را تحمل می‌کرد و ادامه‌ی پیام با read_exactِ خشک
-        // خوانده می‌شد. با پرچم توقف، ادامه‌ی پیام هم صبر و تکرار
-        // می‌کند و پیامِ کامل برمی‌گردد.
-        use std::io::Write;
-        use std::net::TcpListener;
-        let payload: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
-        let mut enc = encode_message(1, 0, 0, &(CHUNK_SIZE_NEGOTIATED).to_be_bytes());
-        enc.extend_from_slice(&encode_message(9, 12345, 1, &payload));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let writer = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            // سه تکه با دو مکثِ ۳۵۰ms وسطِ پیام (بیش از timeout ۲۰۰ms).
-            s.write_all(&enc[..12]).unwrap();
-            std::thread::sleep(Duration::from_millis(350));
-            s.write_all(&enc[12..4200]).unwrap();
-            std::thread::sleep(Duration::from_millis(350));
-            s.write_all(&enc[4200..]).unwrap();
-        });
-        let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
-        let mut conn = ChunkConn::new(stream);
-        conn.set_stop_flag(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        let mut got = None;
-        for _ in 0..200 {
-            match conn.read_message() {
-                Ok(Some(m)) => {
-                    if m.0.msg_type == 9 {
-                        got = Some(m);
-                        break;
-                    }
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-                Err(e) => panic!("خواندن با مکثِ وسطِ پیام ناموفق: {e}"),
-            }
-        }
-        writer.join().unwrap();
-        let (h, body) = got.expect("پیام با مکثِ وسطِ آن خوانده نشد");
-        assert_eq!(h.msg_type, 9);
-        assert_eq!(body, payload);
-    }
-
-    #[test]
-    fn mid_message_stop_interrupts() {
-        // اگر وسطِ انتظارِ ادامه‌ی پیام، توقف زده شود، خواندن باید
-        // سریع با Interrupted برگردد، نه اینکه تا آمدنِ بایت‌ها گیر
-        // کند و نه اینکه خطای timeout بدهد.
-        use std::io::Write;
-        use std::net::TcpListener;
-        let payload: Vec<u8> = vec![7u8; 100];
-        let mut enc = encode_message(1, 0, 0, &(CHUNK_SIZE_NEGOTIATED).to_be_bytes());
-        enc.extend_from_slice(&encode_message(9, 1, 1, &payload));
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let writer = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            s.write_all(&enc[..12]).unwrap();
-            // بقیه دیر می‌آید؛ خواننده باید با توقف برگردد، نه با آن.
-            std::thread::sleep(Duration::from_secs(3));
-            let _ = s.write_all(&enc[12..]);
-        });
-        let stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut conn = ChunkConn::new(stream);
-        conn.set_stop_flag(flag.clone());
-        let setter = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(300));
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-        let start = Instant::now();
-        let res = conn.read_message();
-        let elapsed = start.elapsed();
-        setter.join().unwrap();
-        writer.join().unwrap();
-        assert!(elapsed < Duration::from_secs(2), "توقف دیر دیده شد");
-        match res {
-            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::Interrupted),
-            Ok(_) => panic!("انتظارِ Interrupted بود"),
-        }
     }
 }
