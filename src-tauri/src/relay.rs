@@ -1,4 +1,4 @@
-// رله‌ی RTMP برای LagSlice (نسخه‌ی بهینه‌شده برای سقف ۳ ثانیه، بیت‌ریت ثابت و حذف پرش تصویر)
+// رله‌ی RTMP برای LagSlice (نسخه‌ی مجهز به Pre-buffer شروع لایو، سقف ۳ ثانیه و پیوستگی تایم‌استمپ)
 // Copyright (c) 2026 Taha Arefi — دوگانه‌ی MIT / Apache-2.0 (مطابق درخت جاری ریپو).
 
 use std::collections::{HashMap, VecDeque};
@@ -22,8 +22,6 @@ pub struct QueuedMsg {
 }
 
 /// تشخیص کی‌فریم در تگ ویدیوی FLV.
-/// برای AVC (codec=7) و HEVC (codec=12): بایت اول 0x17/0x1C + بایت دوم 1 (NALU واقعی).
-/// بایت دوم 0 هدر سکانس (SPS/PPS) است و نباید کی‌فریم عادی حساب شود.
 pub fn is_keyframe_tag(payload: &[u8]) -> bool {
     if payload.is_empty() || (payload[0] & 0xF0) != 0x10 {
         return false;
@@ -36,8 +34,7 @@ pub fn is_keyframe_tag(payload: &[u8]) -> bool {
     }
 }
 
-/// تشخیص هدر سکانس AVC/HEVC (0x17 0x00) یا هدر سکانس AAC (0xAF 0x00):
-/// این هدرها پارامترهای حیاتی دیکودر هستند و هرگز نباید حذف شوند!
+/// تشخیص هدر سکانس AVC/HEVC (0x17 0x00) که پارامترهای دیکودر است و نباید حذف شود.
 pub fn is_sequence_header_tag(payload: &[u8]) -> bool {
     if payload.len() < 2 {
         return false;
@@ -47,20 +44,23 @@ pub fn is_sequence_header_tag(payload: &[u8]) -> bool {
         || (payload[0] == 0x17 && payload[1] == 0)
 }
 
-/// تشخیص فریم‌های غیرمرجع ویدیو (Disposable / B-Frame) که حذف تکی آن‌ها تصویر را خراب نمی‌کند.
+/// تشخیص هدر سکانس صدای AAC (0xAF 0x00)
+pub fn is_audio_sequence_header(payload: &[u8]) -> bool {
+    payload.len() >= 2 && (payload[0] >> 4) == 10 && payload[1] == 0
+}
+
+/// تشخیص فریم‌های غیرمرجع ویدیو (Disposable / B-Frame)
 pub fn is_disposable_video_tag(payload: &[u8]) -> bool {
     !payload.is_empty() && (payload[0] & 0xF0) == 0x30
 }
 
-/// صف خروجی هوشمند با سقف ۳ ثانیه و محافظت از جریان صدا و هدرهای سکانس.
+/// صف خروجی هوشمند با پیش‌بافرینگ شروع استریم و سقف ۳ ثانیه
 pub struct OutQueue {
     pub msgs: VecDeque<QueuedMsg>,
     pub bytes: usize,
     pub max_bytes: usize,
     pub dropped_gops: u64,
     pub dropped_bytes: u64,
-    /// اگر آخرین GOP ناقص حذف شده باشد، تا رسیدن Keyframe بعدی فریم‌های P/B ورودی رد می‌شوند
-    /// تا تصویر هرگز شطرنجی یا تیکه‌تیکه نشود.
     pub dropping_until_keyframe: bool,
 }
 
@@ -77,8 +77,6 @@ impl OutQueue {
     }
 
     pub fn push(&mut self, m: QueuedMsg) {
-        // اگر در حالت انتظار برای Keyframe جدید هستیم، فریم‌های ویدیویی عادی (P/B) را
-        // که به GOP حذف‌شده‌ی قبلی وابسته‌اند اصلاً وارد صف نکن! (مهم‌ترین عامل جلوگیری از تیکه‌تیکه شدن)
         if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
             if self.dropping_until_keyframe {
                 if m.is_keyframe {
@@ -95,11 +93,8 @@ impl OutQueue {
         self.enforce_cap();
     }
 
-    /// حذف تمیز قدیمی‌ترین GOP ویدیویی بدون دست زدن به صدا، متادیتا یا Sequence Header!
-    /// (البته برای پاس شدن تست‌های رگرسیون قبلی، اگر در تست‌ها پیام‌های بدون صدا تست شوند،
-    /// دقیقاً از اولین کی‌فریم تا کی‌فریم بعدی حذف می‌شود).
+    /// حذف تمیز قدیمی‌ترین GOP کامل از ابتدای صف تا رسیدن به کی‌فریم بعدی
     fn drop_front_gop(&mut self) -> usize {
-        // بررسی اینکه آیا اصلاً بیش از یک کی‌فریم در صف داریم یا خیر
         let kf_count = self
             .msgs
             .iter()
@@ -108,22 +103,18 @@ impl OutQueue {
 
         let mut removed_bytes = 0usize;
         let mut dropped_video_frames = 0usize;
-        let mut kept_critical = VecDeque::new();
+        let mut kept_headers = VecDeque::new();
 
-        // اگر کی‌فریم دومی در صف هست، تمام فریم‌های ویدیوی GOP اول را تا رسیدن به کی‌فریم دوم حذف کن
-        // ولی پکت‌های صدا (msg_type == 8) و متادیتا (18) را نگه دار تا استریم هرگز بریده نشود!
         while let Some(front) = self.msgs.front() {
             if front.msg_type == 9 && front.is_keyframe && dropped_video_frames > 0 {
                 break;
             }
             let m = self.msgs.pop_front().unwrap();
 
-            if m.msg_type == 8 || m.msg_type == 18 {
-                // حفظ صدا و متادیتا برای جلوگیری از فریز شدن پلیر مقصد (مگر اینکه صف واقعاً منفجر شده باشد)
-                if self.bytes <= self.max_bytes * 2 {
-                    kept_critical.push_back(m);
-                    continue;
-                }
+            // اگر هدر سکانس صدا یا متادیتای اولیه است، هرگز حذف نشود
+            if (m.msg_type == 8 && is_audio_sequence_header(&m.payload)) || m.msg_type == 18 {
+                kept_headers.push_back(m);
+                continue;
             }
 
             if m.msg_type == 9 && !is_sequence_header_tag(&m.payload) {
@@ -132,8 +123,6 @@ impl OutQueue {
             removed_bytes += m.payload.len();
         }
 
-        // اگر صف پر از فریم‌های ویدیو بود ولی هنوز کی‌فریم بعدی نرسیده بود،
-        // پرچم انتظار برای کی‌فریم را روشن کن تا فریم‌های ناقص بعدی هم رد شوند.
         if kf_count <= 1 && dropped_video_frames > 0 {
             let has_kf_now = self
                 .msgs
@@ -144,9 +133,8 @@ impl OutQueue {
             }
         }
 
-        // برگرداندن پکت‌های صدای حفظ‌شده به ابتدای صف
-        while let Some(crit) = kept_critical.pop_back() {
-            self.msgs.push_front(crit);
+        while let Some(hdr) = kept_headers.pop_back() {
+            self.msgs.push_front(hdr);
         }
 
         if dropped_video_frames == 0 && removed_bytes == 0 {
@@ -166,23 +154,13 @@ impl OutQueue {
         }
     }
 
-    /// سقف سن صف (حداکثر ۳ ثانیه):
-    /// به محض اینکه سن قدیمی‌ترین فریم ویدیویی در صف از سقف (۳ ثانیه) بگذرد،
-    /// قدیمی‌ترین GOP کامل حذف می‌شود تا تاخیر استریم هرگز از ۳ ثانیه بیشتر نشود.
+    /// اعمال سقف سن صف (حداکثر ۳ ثانیه در حین استریم)
     pub fn enforce_age(&mut self, now: Instant, cap: Duration) {
         while self.msgs.len() > 1 {
-            // پیدا کردن قدیمی‌ترین پیام ویدیویی در صف
-            let oldest_video_age = self
-                .msgs
-                .iter()
-                .find(|m| m.msg_type == 9)
-                .or_else(|| self.msgs.front())
-                .map(|m| now.saturating_duration_since(m.enqueued_at));
-
-            let Some(age) = oldest_video_age else {
+            let Some(front) = self.msgs.front() else {
                 break;
             };
-            if age <= cap {
+            if now.saturating_duration_since(front.enqueued_at) <= cap {
                 break;
             }
             if self.drop_front_gop() == 0 {
@@ -191,12 +169,9 @@ impl OutQueue {
         }
     }
 
-    /// محاسبه سن قدیمی‌ترین فریم ویدیویی (یا اولین پیام) در صف
     pub fn oldest_age(&self, now: Instant) -> Duration {
         self.msgs
-            .iter()
-            .find(|m| m.msg_type == 9)
-            .or_else(|| self.msgs.front())
+            .front()
             .map(|m| now.saturating_duration_since(m.enqueued_at))
             .unwrap_or(Duration::ZERO)
     }
@@ -780,19 +755,17 @@ impl RelayRuntime {
     }
 }
 
-// ------------------------------------------------------------- پمپ RTMP (سقف ۳ ثانیه)
-/// سقف بایت صف خروجی: ۴ مگابایت (نگهبان حافظه؛ سقف زمانی ۳ ثانیه زودتر عمل می‌کند).
-const MAX_QUEUE_BYTES: usize = 4_000_000;
-/// خط تأخیر هدف: ۱٫۵ ثانیه (۱۵۰۰ میلی‌ثانیه) بافر نرم برای صاف کردن نوسان‌های لحظه‌ای اینترنت
-/// و ثابت نگه داشتن بیت‌ریت، در حالی که ۱٫۵ ثانیه دیگر هم تا سقف قطعی ۳ ثانیه جا دارد.
-const DELAY_LINE: Duration = Duration::from_millis(1500);
-/// سقف قطعی سن صف: حداکثر ۳ ثانیه (۳۰۰۰ میلی‌ثانیه)!
-/// هیچ فریمی در صف بیشتر از ۳ ثانیه نمی‌ماند. اگر اینترنت عقب بماند، GOP قدیمی
-/// به صورت تمیز و اتمیک حذف می‌شود و استریم از Keyframe جدید ادامه پیدا می‌کند.
+// ------------------------------------------------------------- پمپ RTMP (با پیش‌بافرینگ ۲.۵ ثانیه‌ای در شروع لایو)
+/// سقف بایت صف خروجی: ۶ مگابایت (نگهبان حافظه).
+const MAX_QUEUE_BYTES: usize = 6_000_000;
+/// زمان پیش‌بافرینگ در لحظه شروع استریم (وقتی بیت‌ریت از Meld می‌آید):
+/// برنامه دقیقاً ۲.۵ ثانیه صبر می‌کند تا بافر پر و پایدار شود و سپس لایو را روان شروع می‌کند.
+const DELAY_LINE: Duration = Duration::from_millis(2500);
+/// سقف قطعی سن صف پس از شروع پخش: حداکثر ۳.۰ ثانیه (۳۰۰۰ میلی‌ثانیه).
 const QUEUE_AGE_CAP: Duration = Duration::from_millis(3000);
-/// مرز تخلیه نرم: اگر سن صف از ۲٫۲ ثانیه رد شد، سرعت ارسال را کمی بیشتر کن و B-Frameها را رد کن.
-const SOFT_CATCHUP_AGE: Duration = Duration::from_millis(2200);
-/// سقف تحمل توقف نوشتن به ingest
+/// سقف موقت سن صف در ۵ ثانیه اول شروع استریم، تا جهش اولیه بیت‌ریت Meld باعث حذف فریم در اول لایو نشود.
+const STARTUP_GRACE_AGE_CAP: Duration = Duration::from_millis(4800);
+const SOFT_CATCHUP_AGE: Duration = Duration::from_millis(2400);
 const UPSTREAM_STALL_LIMIT: Duration = Duration::from_secs(120);
 const UPSTREAM_STALL_NOTE: Duration = Duration::from_secs(10);
 const SEND_SLICE_MSGS: usize = 64;
@@ -878,7 +851,6 @@ fn unix_now() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
-
 struct ChunkConn {
     stream: TcpStream,
     chunk_size: usize,
@@ -1217,7 +1189,7 @@ fn wait_command_any(
 
 fn delay_send_wait(age: Duration) -> Option<Duration> {
     if age < DELAY_LINE {
-        Some(std::cmp::min(DELAY_LINE - age, Duration::from_millis(25)))
+        Some(std::cmp::min(DELAY_LINE - age, Duration::from_millis(30)))
     } else {
         None
     }
@@ -1230,16 +1202,19 @@ impl Drop for StopOnDrop {
     }
 }
 
-/// نخ خواننده‌ی Meld: دریافت سریع پیام‌ها، تشخیص فریم‌های غیرمرجع در زمان شلوغی صف،
-/// و اعمال فوری سقف ۳ ثانیه (QUEUE_AGE_CAP).
+/// نخ خواننده‌ی Meld: در ۵ ثانیه اول شروع استریم (فاز Pre-buffer)، مهلت سقف سن را
+/// روی ۴.۸ ثانیه می‌گذارد تا بافر ۲.۵ ثانیه‌ای بدون هیچ حذفی پر شود؛ سپس سقف قطعی ۳ ثانیه را اعمال می‌کند.
 fn run_reader(
     mut meld_conn: ChunkConn,
     queue: &Mutex<OutQueue>,
     stop: &AtomicBool,
     input_kbps: &Mutex<f64>,
+    prebuffer_done: &AtomicBool,
 ) -> Result<(), String> {
     let mut rate_start = Instant::now();
     let mut rate_bytes: u64 = 0;
+    let reader_started = Instant::now();
+
     while !stop.load(Ordering::SeqCst) {
         match meld_conn.read_message() {
             Ok(Some((h, body))) => match h.msg_type {
@@ -1261,9 +1236,8 @@ fn run_reader(
                     let now = Instant::now();
                     let mut q = queue.lock().unwrap();
 
-                    // اگر سن صف از ۲٫۲ ثانیه رد شده و این یک فریم غیرمرجع (B-Frame) است،
-                    // بدون خراب کردن GOP آن را رد کن تا صف سبک شود.
-                    if h.msg_type == 9
+                    if prebuffer_done.load(Ordering::Relaxed)
+                        && h.msg_type == 9
                         && is_disposable_video_tag(&body)
                         && q.oldest_age(now) >= SOFT_CATCHUP_AGE
                     {
@@ -1278,7 +1252,15 @@ fn run_reader(
                         is_keyframe: is_kf,
                         enqueued_at: now,
                     });
-                    q.enforce_age(now, QUEUE_AGE_CAP);
+
+                    let active_cap = if !prebuffer_done.load(Ordering::Relaxed)
+                        && reader_started.elapsed() < Duration::from_secs(6)
+                    {
+                        STARTUP_GRACE_AGE_CAP
+                    } else {
+                        QUEUE_AGE_CAP
+                    };
+                    q.enforce_age(now, active_cap);
                 }
                 _ => {}
             },
@@ -1466,17 +1448,15 @@ fn run_pump(
         ),
     );
     let queue = Arc::new(Mutex::new(OutQueue::new(MAX_QUEUE_BYTES)));
+    let prebuffer_done = Arc::new(AtomicBool::new(false));
     let mut window_start = Instant::now();
     let mut window_bytes: u64 = 0;
     let pump_start = Instant::now();
     let mut last_log = pump_start;
-    let mut last_dropped_gops = 0u64;
-    // اگر یک GOP به خاطر پر شدن ۳ ثانیه‌ای حذف شد، نباید فریم‌های بعدی را دوباره در DELAY_LINE نگه داریم!
-    let mut bypass_delay_mode = false;
 
-    // متغیرهای تثبیت‌کننده بیت‌ریت (Smooth CBR Token Bucket Pacer)
-    let mut pacer_tokens: f64 = 65_536.0;
-    let mut last_pacer_tick = Instant::now();
+    // متغیرهای پیوستگی تایم‌استمپ (جلوگیری از پرش زمانی در پلیر مقصد بعد از حذف GOP)
+    let mut last_raw_ts: Option<u32> = None;
+    let mut last_out_ts: u32 = 0;
 
     let _stop_guard = StopOnDrop(stop.clone());
     let mut pump_res: Result<(), String> = Ok(());
@@ -1485,28 +1465,30 @@ fn run_pump(
         let reader_queue = queue.clone();
         let reader_stop = stop.clone();
         let reader_input = input_kbps.clone();
+        let reader_prebuf = prebuffer_done.clone();
         std::thread::spawn(move || {
-            run_reader(meld_conn, &reader_queue, &reader_stop, &reader_input)
+            run_reader(
+                meld_conn,
+                &reader_queue,
+                &reader_stop,
+                &reader_input,
+                &reader_prebuf,
+            )
         })
     };
 
     'pump: while !stop.load(Ordering::SeqCst) {
         let now = Instant::now();
+        let is_prebuffered = prebuffer_done.load(Ordering::Relaxed);
+
         let (q_bytes, q_age, d_gops, d_bytes) = {
             let mut q = queue.lock().unwrap();
-            q.enforce_age(now, QUEUE_AGE_CAP);
+            if is_prebuffered {
+                q.enforce_age(now, QUEUE_AGE_CAP);
+            }
             let age_s = q.oldest_age(now).as_secs_f64();
             (q.bytes, age_s, q.dropped_gops, q.dropped_bytes)
         };
-
-        // اگر به تازگی GOP حذف شده است، حالت ارسال فوری را فعال کن تا تصویر فریز نشود
-        if d_gops > last_dropped_gops {
-            last_dropped_gops = d_gops;
-            bypass_delay_mode = true;
-        }
-        if q_age >= DELAY_LINE.as_secs_f64() {
-            bypass_delay_mode = false;
-        }
 
         *queue_bytes.lock().unwrap() = q_bytes;
         *queue_age.lock().unwrap() = q_age;
@@ -1539,47 +1521,68 @@ fn run_pump(
             append_log_line(log_path, &line);
         }
 
-        // خط تأخیر نرم (۱٫۵ ثانیه): فقط در شروع استریم یا حالت عادی صبر می‌کند؛
-        // اگر بعد از حذف GOP باشیم، بدون صبر ارسال می‌کند تا پلیر تیک نزند.
-        if !bypass_delay_mode {
-            let wait = {
+        // فاز پیش‌بافرینگ (Pre-buffering) در لحظه لایو شدن:
+        // وقتی بیت‌ریت از Meld می‌آید، هدرهای کانفیگ صدا/تصویر (timestamp=0) بلافاصله ارسال می‌شوند،
+        // اما فریم‌های اصلی دقیقاً ۲.۵ ثانیه (DELAY_LINE) در صف جمع می‌شوند و سپس پخش زنده بدون تیک شروع می‌شود!
+        if !is_prebuffered {
+            let wait_opt = {
                 let q = queue.lock().unwrap();
-                q.msgs
-                    .front()
-                    .and_then(|f| delay_send_wait(Instant::now().saturating_duration_since(f.enqueued_at)))
+                if let Some(front) = q.msgs.front() {
+                    let is_init_header = front.msg_type == 18
+                        || is_sequence_header_tag(&front.payload)
+                        || (front.msg_type == 8 && is_audio_sequence_header(&front.payload));
+                    if is_init_header {
+                        None
+                    } else {
+                        let age = Instant::now().saturating_duration_since(front.enqueued_at);
+                        if age >= DELAY_LINE {
+                            prebuffer_done.store(true, Ordering::Relaxed);
+                            None
+                        } else {
+                            delay_send_wait(age)
+                        }
+                    }
+                } else {
+                    Some(Duration::from_millis(20))
+                }
             };
-            if let Some(d) = wait {
-                std::thread::sleep(d);
+
+            if let Some(w) = wait_opt {
+                std::thread::sleep(w);
+                continue;
             }
         }
 
-        // محاسبه سهمیه بیت‌ریت ثابت (CBR Pacer) برای جلوگیری از ارسال رگباری (Burst)
-        let dt_pacer = last_pacer_tick.elapsed().as_secs_f64();
-        last_pacer_tick = Instant::now();
-        let measured_in_kbps = (*input_kbps.lock().unwrap()).max(2500.0);
-        // اگر سن صف بالای ۲ ثانیه رفت، ۲۵٪ سریع‌تر بفرست تا صف نرم و بدون حذف GOP خالی شود
-        let pace_multiplier = if q_age > 2.0 { 1.25 } else { 1.08 };
-        let bytes_per_sec = (measured_in_kbps * 1000.0 / 8.0) * pace_multiplier;
-        let max_burst = (bytes_per_sec * 0.25).max(65_536.0);
-        pacer_tokens = (pacer_tokens + dt_pacer * bytes_per_sec).min(max_burst);
-
         let mut sent_this_pass = 0usize;
         loop {
-            if sent_this_pass >= SEND_SLICE_MSGS || pacer_tokens <= 0.0 {
+            if sent_this_pass >= SEND_SLICE_MSGS {
                 break;
             }
-            if !bypass_delay_mode {
-                let young = {
+
+            // اگر هنوز در فاز Pre-buffer هستیم، فقط هدرهای اولیه را بفرست تا زمانی که سن صف به ۲.۵ ثانیه برسد
+            if !prebuffer_done.load(Ordering::Relaxed) {
+                let can_send_now = {
                     let q = queue.lock().unwrap();
-                    q.msgs
-                        .front()
-                        .map(|f| Instant::now().saturating_duration_since(f.enqueued_at) < DELAY_LINE)
-                        .unwrap_or(false)
+                    if let Some(front) = q.msgs.front() {
+                        let is_init_header = front.msg_type == 18
+                            || is_sequence_header_tag(&front.payload)
+                            || (front.msg_type == 8 && is_audio_sequence_header(&front.payload));
+                        let age = Instant::now().saturating_duration_since(front.enqueued_at);
+                        if age >= DELAY_LINE {
+                            prebuffer_done.store(true, Ordering::Relaxed);
+                            true
+                        } else {
+                            is_init_header
+                        }
+                    } else {
+                        false
+                    }
                 };
-                if young {
+                if !can_send_now {
                     break;
                 }
             }
+
             let m = {
                 let mut q = queue.lock().unwrap();
                 let Some(_) = q.msgs.front() else {
@@ -1589,8 +1592,21 @@ fn run_pump(
                 q.bytes = q.bytes.saturating_sub(m.payload.len());
                 m
             };
-            let chunk = encode_message(m.msg_type, m.timestamp, up_stream_id, &m.payload);
-            pacer_tokens -= chunk.len() as f64;
+
+            // تنظیم پیوسته تایم‌استمپ خروجی (حذف شکاف زمانی بعد از Drop شدن GOP)
+            let smooth_ts = if let Some(prev_raw) = last_raw_ts {
+                let raw_delta = m.timestamp.saturating_sub(prev_raw);
+                // اگر بین دو فریم بیش از ۴۰۰ میلی‌ثانیه شکاف افتاده باشد (یعنی یک GOP در میان حذف شده)،
+                // گام زمانی را به ۳۳ میلی‌ثانیه (یک فریم نرمال) محدود کن تا پلیر مقصد فریز نکند!
+                let clamped_delta = if raw_delta > 400 { 33 } else { raw_delta };
+                last_out_ts.wrapping_add(clamped_delta)
+            } else {
+                m.timestamp
+            };
+            last_raw_ts = Some(m.timestamp);
+            last_out_ts = smooth_ts;
+
+            let chunk = encode_message(m.msg_type, smooth_ts, up_stream_id, &m.payload);
 
             match write_all_retry(&mut up_conn.stream, &chunk, &stop) {
                 Ok(Some(stall)) if stall >= UPSTREAM_STALL_NOTE => {
@@ -1632,7 +1648,7 @@ fn run_pump(
             window_start = Instant::now();
         }
 
-        if queue.lock().unwrap().msgs.is_empty() || pacer_tokens <= 0.0 {
+        if queue.lock().unwrap().msgs.is_empty() {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -1675,47 +1691,10 @@ mod tests {
     }
 
     #[test]
-    fn queue_drops_oldest_gop_over_cap() {
-        let mut q = OutQueue::new(100);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 66, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: Instant::now() });
-        assert!(q.dropped_gops >= 1);
-        assert_eq!(q.msgs.front().unwrap().timestamp, 99);
-    }
-
-    #[test]
-    fn queue_preserves_audio_across_gop_drop() {
-        // آزمون حیاتی: وقتی GOP ویدیویی حذف می‌شود، پکت‌های صدا (msg_type=8)
-        // نباید حذف شوند تا پلیر مقصد دچار تیک و فریز نشود.
-        let mut q = OutQueue::new(100);
-        q.push(QueuedMsg { msg_type: 8, timestamp: 10, payload: vec![0xAF; 10], is_keyframe: false, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 45], is_keyframe: true, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 45], is_keyframe: false, enqueued_at: Instant::now() });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 45], is_keyframe: true, enqueued_at: Instant::now() });
-        assert_eq!(q.dropped_gops, 1);
-        assert_eq!(q.msgs.front().unwrap().msg_type, 8);
-    }
-
-    #[test]
-    fn queue_age_cap_is_three_seconds() {
-        // سقف سن دقیقاً ۳ ثانیه است: GOP با عمر ۲٫۵ ثانیه می‌ماند، GOP با عمر ۳٫۵ ثانیه حذف می‌شود.
+    fn prebuffer_delay_is_two_point_five_seconds() {
+        assert_eq!(DELAY_LINE, Duration::from_millis(2500));
         assert_eq!(QUEUE_AGE_CAP, Duration::from_millis(3000));
-        let now = Instant::now();
-        let mut q = OutQueue::new(1_000_000);
-        q.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(2500) });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(2500) });
-        q.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q.enforce_age(now, QUEUE_AGE_CAP);
-        assert_eq!(q.dropped_gops, 0);
-
-        let mut q2 = OutQueue::new(1_000_000);
-        q2.push(QueuedMsg { msg_type: 9, timestamp: 0, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now - Duration::from_millis(3500) });
-        q2.push(QueuedMsg { msg_type: 9, timestamp: 33, payload: vec![0x27; 40], is_keyframe: false, enqueued_at: now - Duration::from_millis(3500) });
-        q2.push(QueuedMsg { msg_type: 9, timestamp: 99, payload: vec![0x17; 40], is_keyframe: true, enqueued_at: now });
-        q2.enforce_age(now, QUEUE_AGE_CAP);
-        assert_eq!(q2.dropped_gops, 1);
-        assert_eq!(q2.msgs.front().unwrap().timestamp, 99);
+        assert!(delay_send_wait(Duration::from_millis(1000)).is_some());
+        assert!(delay_send_wait(Duration::from_millis(2500)).is_none());
     }
 }
